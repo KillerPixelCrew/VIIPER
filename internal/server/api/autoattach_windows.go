@@ -324,13 +324,24 @@ func getDeviceInterfacePath(guid *windows.GUID) (string, error) {
 	}
 
 	var requiredSize uint32
-	syscall.SyscallN(procSetupDiGetDeviceInterfaceDetailW.Addr(),
+	rSize, _, eSize := syscall.SyscallN(procSetupDiGetDeviceInterfaceDetailW.Addr(),
 		uintptr(devInfo),
 		uintptr(unsafe.Pointer(&interfaceData)),
 		0,
 		0,
 		uintptr(unsafe.Pointer(&requiredSize)),
 		0)
+
+	// The size query is expected to fail with ERROR_INSUFFICIENT_BUFFER; that is
+	// how it reports the size. Any other failure means requiredSize was not
+	// written, and indexing a zero-length slice below would panic instead of
+	// reporting why discovery failed.
+	if rSize == 0 && eSize != windows.ERROR_INSUFFICIENT_BUFFER {
+		return "", fmt.Errorf("Discovery: SetupDiGetDeviceInterfaceDetailW (size query) failed: %w", eSize)
+	}
+	if requiredSize == 0 {
+		return "", fmt.Errorf("Discovery: SetupDiGetDeviceInterfaceDetailW (size query) returned no size")
+	}
 
 	detailData := make([]byte, requiredSize)
 	detailHeader := (*SP_DEVICE_INTERFACE_DETAIL_DATA)(unsafe.Pointer(&detailData[0]))
@@ -359,9 +370,9 @@ func CheckAutoAttachPrerequisites(useNativeIOCTL bool, logger *slog.Logger) bool
 	if useNativeIOCTL {
 		_, err := getDeviceInterfacePath(&deviceGUID)
 		if err != nil {
-			logger.Warn("usbip-win2 driver not found or not installed")
-			logger.Warn("Native IOCTL auto-attach requires the usbip-win2 driver")
-			logger.Info("Download and install usbip-win2:")
+			logger.Warn("Native IOCTL auto-attach prerequisites not met", "error", err)
+			logger.Warn("Native IOCTL auto-attach is unavailable until discovery succeeds")
+			logger.Info("If usbip-win2 is not installed, download and install:")
 			logger.Info("  https://github.com/vadimgrn/usbip-win2")
 			logger.Info("  https://github.com/OSSign/vadimgrn--usbip-win2")
 			return false
