@@ -133,6 +133,17 @@ func (s *InputState) UnmarshalBinary(data []byte) error {
 	return nil
 }
 
+// clampStickMin keeps stick Y values out of math.MinInt16. SDL3's deck driver
+// negates stick Y with plain unary minus (SDL_hidapi_steamdeck.c: -sLeftStickY),
+// so -32768 wraps back to -32768 and a fully deflected stick reads as the
+// opposite extreme. Real deck sticks are calibrated and never report -32768.
+func clampStickMin(v int16) int16 {
+	if v == -32768 {
+		return -32767
+	}
+	return v
+}
+
 func (s *InputState) buildReport(frame uint32, payloadLen byte) []byte {
 	b := make([]byte, InputReportLen)
 	b[0] = 0x01
@@ -256,9 +267,9 @@ func (s *InputState) buildReport(frame uint32, payloadLen byte) []byte {
 	binary.LittleEndian.PutUint16(b[44:46], s.LTrigger)
 	binary.LittleEndian.PutUint16(b[46:48], s.RTrigger)
 	binary.LittleEndian.PutUint16(b[48:50], uint16(s.LStickX))
-	binary.LittleEndian.PutUint16(b[50:52], uint16(s.LStickY))
+	binary.LittleEndian.PutUint16(b[50:52], uint16(clampStickMin(s.LStickY)))
 	binary.LittleEndian.PutUint16(b[52:54], uint16(s.RStickX))
-	binary.LittleEndian.PutUint16(b[54:56], uint16(s.RStickY))
+	binary.LittleEndian.PutUint16(b[54:56], uint16(clampStickMin(s.RStickY)))
 	binary.LittleEndian.PutUint16(b[56:58], s.LPadForce)
 	binary.LittleEndian.PutUint16(b[58:60], s.RPadForce)
 	binary.LittleEndian.PutUint16(b[60:62], s.LStickForce)

@@ -23,10 +23,6 @@ const (
 	genericEndpointNumber    = 0x01
 )
 
-var zeroMouseReport = []byte{0x00, 0x00, 0x00, 0x00}
-
-var zeroKeyboardReport = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-
 type SteamDeck struct {
 	gate           *device.InputGate
 	inputState          *InputState
@@ -148,16 +144,11 @@ func (d *SteamDeck) UpdateInputState(state *InputState) {
 func (d *SteamDeck) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
 	if dir == usbip.DirIn {
 		switch ep {
-		case mouseEndpointNumber:
-			if device.GateCancelled == device.BlockUntilDeadline(ctx) {
-				return nil
-			}
-			return append([]byte(nil), zeroMouseReport...)
-		case keyboardEndpointNumber:
-			if device.GateCancelled == device.BlockUntilDeadline(ctx) {
-				return nil
-			}
-			return append([]byte(nil), zeroKeyboardReport...)
+		case mouseEndpointNumber, keyboardEndpointNumber:
+			// These interfaces are descriptor placeholders only. Keep the host request
+			// pending instead of completing it with idle input that can wake the system.
+			device.BlockUntilDeadline(ctx)
+			return nil
 		case controllerEndpointNumber:
 			if device.GateCancelled == d.gate.Wait(ctx) {
 				return nil

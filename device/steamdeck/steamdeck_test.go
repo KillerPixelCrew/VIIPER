@@ -37,7 +37,12 @@ func TestInputReports(t *testing.T) {
 				assert.Equal(t, byte(steamdeck.InputReportID), got[2])
 				assert.Equal(t, byte(steamdeck.DeckInputPayloadLen), got[3])
 				assert.Equal(t, make([]byte, 7), got[8:15])
-				assert.Equal(t, uint16(0x4000), binary.LittleEndian.Uint16(got[36:38]))
+				// The orientation quaternion stays zero when unset. 9de6355 dropped the
+				// forced identity deliberately: the device does not advertise
+				// SendOrientation and never computes a live orientation, and a frozen
+				// identity quat made Steam ignore the raw angular velocity and collapse
+				// gyro-to-stick to center. Matches InputPlumber's Steam Deck target.
+				assert.Equal(t, uint16(0), binary.LittleEndian.Uint16(got[36:38]))
 				assert.Equal(t, uint16(0), binary.LittleEndian.Uint16(got[38:40]))
 				assert.Equal(t, uint16(0), binary.LittleEndian.Uint16(got[40:42]))
 				assert.Equal(t, uint16(0), binary.LittleEndian.Uint16(got[42:44]))
