@@ -244,11 +244,19 @@ func TestFeatureResponses(t *testing.T) {
 		return
 	}
 	assert.Equal(t, byte(steamdeck.FeatureGetAttributesValues), resp[0])
-	assert.Equal(t, byte(30), resp[1])
+	assert.Equal(t, byte(50), resp[1])
 	assert.Equal(t, byte(steamdeck.AttributeProductID), resp[7])
 	assert.Equal(t, uint32(steamdeck.DefaultPID), binary.LittleEndian.Uint32(resp[8:12]))
 	assert.Equal(t, byte(steamdeck.AttributeConnectionIntervalUs), resp[27])
 	assert.Equal(t, uint32(4000), binary.LittleEndian.Uint32(resp[28:32]))
+	// Steam withholds features (rumble among them) from firmware identities it has never seen
+	// on a real Deck, so the credible build times and board revision are pinned here.
+	assert.Equal(t, byte(steamdeck.AttributeBoardRevision), resp[22])
+	assert.Equal(t, uint32(0x2e), binary.LittleEndian.Uint32(resp[23:27]))
+	assert.Equal(t, byte(steamdeck.AttributeFirmwareBuildTime), resp[17])
+	assert.Equal(t, uint32(0x677c61b7), binary.LittleEndian.Uint32(resp[18:22]))
+	assert.Equal(t, byte(steamdeck.AttributeBootloaderBuildTime), resp[32])
+	assert.Equal(t, uint32(0x62a9122b), binary.LittleEndian.Uint32(resp[33:37]))
 
 	resp, handled = dev.HandleControl(0xa1, 0x01, uint16(0x0300|steamdeck.FeatureGetStringAttribute), 0, steamdeck.InputReportLen, nil)
 	if !assert.True(t, handled) {

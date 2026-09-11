@@ -64,6 +64,7 @@ const (
 	AttributeCapabilities         = 0x02
 	AttributeFirmwareBuildTime    = 0x04
 	AttributeBoardRevision        = 0x09
+	AttributeBootloaderBuildTime  = 0x0a
 	AttributeConnectionIntervalUs = 0x0b
 )
 

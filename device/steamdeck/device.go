@@ -88,8 +88,14 @@ func newControllerState() controllerState {
 		boardSerial:  "SteamDeck-0001",
 		unitSerial:   "SteamDeck-0001",
 		uniqueID:     0x53444543,
-		boardRev:     1,
-		firmwareTime: 0x20260226,
+		// Steam gates controller features on these identity attributes. A board revision and
+		// firmware build time it has never seen on a real Deck (the previous BCD-style
+		// 0x20260226 reads as the year 1987 when taken as the unix epoch Steam expects) make
+		// Steam withhold ID_TRIGGER_RUMBLE_CMD entirely, while SDL sends it regardless —
+		// rumble then works from SDL applications but never from Steam Input. These values
+		// mirror hhd's emulated Deck, which Steam demonstrably sends rumble to.
+		boardRev:     0x2e,
+		firmwareTime: 0x677c61b7,
 		mode:         LizardModeOn,
 	}
 	return state
@@ -382,6 +388,13 @@ func (d *SteamDeck) fillAttributes(buf []byte) byte {
 		{tag: AttributeFirmwareBuildTime, value: d.controller.firmwareTime},
 		{tag: AttributeBoardRevision, value: d.controller.boardRev},
 		{tag: AttributeConnectionIntervalUs, value: 4000},
+		// The remaining attributes a current Deck reports (hhd mirrors the same set). Steam
+		// queries them on connect; answering with a truncated set marks the firmware as
+		// ancient and costs Steam-side features such as rumble.
+		{tag: AttributeBootloaderBuildTime, value: 0x62a9122b},
+		{tag: 0x0c, value: 0},
+		{tag: 0x0d, value: 0},
+		{tag: 0x0e, value: 0},
 	}
 
 	offset := 0
