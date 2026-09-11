@@ -81,6 +81,7 @@ type deviceKey struct {
 type deviceInfo struct {
 	dev      usb.Device
 	typeName string // resolved registry name, e.g. "xbox360", "dualshock4", "dualsenseedge", "xboxelite2", "steamcontroller"
+	port     int
 }
 
 // deviceAlias describes a user-friendly device-type name and how it maps
@@ -580,12 +581,16 @@ func viiper_device_add_ex(busID C.uint32_t, typeName *C.char, vid C.uint16_t, pi
 		logger := slog.Default()
 
 		mu.Unlock()
-		err = api.AttachLocalhostClient(context.Background(), exportMeta, port, true, logger)
+		attachedPort, attachErr := api.AttachLocalhostClientWithPort(context.Background(), exportMeta, port, true, logger)
+		err = attachErr
 		if err != nil {
 			slog.Warn("auto-attach via IOCTL failed, trying usbip.exe", "error", err)
-			err = api.AttachLocalhostClient(context.Background(), exportMeta, port, false, logger)
+			attachedPort, err = api.AttachLocalhostClientWithPort(context.Background(), exportMeta, port, false, logger)
 		}
 		mu.Lock()
+		if err == nil {
+			devices[key].port = attachedPort
+		}
 
 		if err != nil {
 			slog.Error("auto-attach failed", "error", err)
@@ -609,6 +614,7 @@ func viiper_device_attach(busID C.uint32_t, deviceID C.uint32_t) C.int {
 
 	bid := uint32(busID)
 	did := uint32(deviceID)
+	key := deviceKey{busID: bid, devID: did}
 
 	port := server.GetListenPort()
 	if port == 0 {
@@ -622,13 +628,16 @@ func viiper_device_attach(busID C.uint32_t, deviceID C.uint32_t) C.int {
 	logger := slog.Default()
 
 	// Try native IOCTL first, then fall back to usbip.exe command.
-	err := api.AttachLocalhostClient(context.Background(), exportMeta, port, true, logger)
+	attachedPort, err := api.AttachLocalhostClientWithPort(context.Background(), exportMeta, port, true, logger)
 	if err != nil {
 		slog.Warn("attach via IOCTL failed, trying usbip.exe", "error", err)
-		err = api.AttachLocalhostClient(context.Background(), exportMeta, port, false, logger)
+		attachedPort, err = api.AttachLocalhostClientWithPort(context.Background(), exportMeta, port, false, logger)
 	}
 	if err != nil {
 		return setError(fmt.Errorf("attach device: %w", err))
+	}
+	if info := devices[key]; info != nil {
+		info.port = attachedPort
 	}
 
 	return 0
@@ -647,6 +656,12 @@ func viiper_device_remove(busID C.uint32_t, deviceID C.uint32_t) C.int {
 	did := uint32(deviceID)
 
 	key := deviceKey{busID: bid, devID: did}
+	info := devices[key]
+	if info != nil && info.port > 0 {
+		if err := api.DetachLocalhostClient(context.Background(), info.port, slog.Default()); err != nil {
+			slog.Warn("detach device failed; removing server-side device anyway", "busID", bid, "deviceID", did, "port", info.port, "error", err)
+		}
+	}
 	delete(devices, key)
 	delete(feedbackCallbacks, key)
 
@@ -851,7 +866,6 @@ func applyInput(info *deviceInfo, buf []byte) error {
 
 	return nil
 }
-
 
 // ---------------------------------------------------------------------------
 // Feedback callbacks

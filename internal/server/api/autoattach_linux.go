@@ -14,7 +14,7 @@ import (
 	"github.com/Alia5/VIIPER/usbip"
 )
 
-func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, _ bool, logger *slog.Logger) error {
+func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, _ bool, logger *slog.Logger) (int, error) {
 	logger.Info("Auto-attaching localhost client", "busID", deviceExportMeta.BusId, "deviceID", deviceExportMeta.DevId)
 
 	cmd := exec.CommandContext(
@@ -32,10 +32,24 @@ func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.Expo
 			"error", err,
 			"port", usbipServerPort,
 			"output", string(output))
-		return err
+		return 0, err
 	}
 	logger.Debug("usbip attach output", "output", string(output))
 
+	port, err := parseAttachedPort(output)
+	if err != nil {
+		return 0, fmt.Errorf("parse usbip attach port: %w", err)
+	}
+	return port, nil
+}
+
+func detachLocalhostClientImpl(ctx context.Context, port int, logger *slog.Logger) error {
+	output, err := exec.CommandContext(ctx, "usbip", "detach", "-p", strconv.Itoa(port)).CombinedOutput()
+	if err != nil {
+		logger.Error("Failed to detach device", "error", err, "port", port, "output", string(output))
+		return err
+	}
+	logger.Debug("usbip detach output", "output", string(output), "port", port)
 	return nil
 }
 
