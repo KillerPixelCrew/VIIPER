@@ -573,30 +573,10 @@ func viiper_device_add_ex(busID C.uint32_t, typeName *C.char, vid C.uint16_t, pi
 		*outDeviceID = C.uint32_t(devID)
 	}
 
-	port := server.GetListenPort()
-	if port > 0 {
-		exportMeta := &usbip.ExportMeta{
-			BusId: bid,
-			DevId: devID,
-		}
-		logger := slog.Default()
-
-		mu.Unlock()
-		attachedPort, attachErr := api.AttachLocalhostClientWithPort(context.Background(), exportMeta, port, true, logger)
-		err = attachErr
-		if err != nil {
-			slog.Warn("auto-attach via IOCTL failed, trying usbip.exe", "error", err)
-			attachedPort, err = api.AttachLocalhostClientWithPort(context.Background(), exportMeta, port, false, logger)
-		}
-		mu.Lock()
-		if err == nil {
-			devices[key].port = attachedPort
-		}
-
-		if err != nil {
-			slog.Error("auto-attach failed", "error", err)
-		}
-	}
+	// viiper_device_add_ex does not attach either, for the same reasons
+	// viiper_device_add stopped: add+attach produced two USB/IP attachments of
+	// one device, and enumerating during add makes it impossible to present a
+	// neutral first frame before the host starts polling.
 
 	return 0
 }
