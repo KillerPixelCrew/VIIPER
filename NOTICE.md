@@ -44,6 +44,6 @@ The complete corresponding source for `libviiper.dll` is this repository. Anyone
 who receives a binary built from it (including `libviiper.dll` as distributed by
 downstream projects) is entitled under GPL-3.0 §6 to the corresponding source at:
 
-  https://github.com/corando98/VIIPER
+  https://github.com/KillerPixelCrew/VIIPER/tree/wsgm
 
 Built artifacts are produced via `build_dll.bat` from the `./clib/` package.

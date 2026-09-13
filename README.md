@@ -238,3 +238,10 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
     - [USBIP-Win2](https://github.com/vadimgrn/usbip-win2)  
 - [SDL](https://www.libsdl.org/)  
   For their excellent work on input device handling, reducing reversing efforts to a minimum.
+
+## WSGM endpoint idle policy
+
+The downstream branch leaves the Steam Deck keyboard and mouse placeholder requests pending without
+recurring keepalive timers. Its controller endpoint keeps continuous reports. See
+[the idle endpoint notes](docs/wsgm-idle-endpoints.md) for policy and validation status.
+

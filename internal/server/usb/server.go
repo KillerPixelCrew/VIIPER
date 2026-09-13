@@ -665,18 +665,8 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		// NAK-idle: no per-attempt deadline — the device blocks on its gate
 		// until real input (the pacer still enforces bInterval spacing), so
 		// nothing is replayed and idle endpoints stay dormant. In "auto" the
-		// device declares its real hardware's behavior via NaksWhenIdle().
-		nakIdle := false
-		switch s.config.IdleMode {
-		case "nak":
-			nakIdle = true
-		case "keepalive":
-			nakIdle = false
-		default: // "auto" or unset
-			if nb, ok := dev.(interface{ NaksWhenIdle() bool }); ok {
-				nakIdle = nb.NaksWhenIdle()
-			}
-		}
+		// device can declare this per endpoint or for the whole device.
+		nakIdle := interruptInNAKIdle(dev, ep, s.config.IdleMode)
 		go func() {
 			var frame bytes.Buffer
 			var last []byte
@@ -917,6 +907,25 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		_ = xferFlags
 		_ = devid
 	}
+}
+
+// Composite devices may stream controller reports while leaving placeholder
+// endpoints pending. Applying the controller's keepalive timeout to those
+// endpoints wakes a timer repeatedly even though they never return a report.
+func interruptInNAKIdle(dev usb.Device, ep uint32, mode string) bool {
+	switch mode {
+	case "nak":
+		return true
+	case "keepalive":
+		return false
+	}
+	if endpoint, ok := dev.(interface{ NaksWhenIdleForEndpoint(uint32) bool }); ok {
+		return endpoint.NaksWhenIdleForEndpoint(ep)
+	}
+	if device, ok := dev.(interface{ NaksWhenIdle() bool }); ok {
+		return device.NaksWhenIdle()
+	}
+	return false
 }
 
 // endpointInterval returns the polling interval of the given interrupt IN

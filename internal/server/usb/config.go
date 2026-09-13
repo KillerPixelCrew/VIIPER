@@ -15,7 +15,10 @@ type ServerConfig struct {
 	// trips and kernel URB work; below the poll rate behavior is unchanged.
 	HardwarePacedCompletions bool `help:"Pace interrupt-IN completions to the endpoint bInterval instead of per input update" default:"true" env:"VIIPER_HW_PACED"`
 	// IdleMode controls interrupt-IN endpoints with no fresh input:
-	//   "auto" (default): per-device — devices whose real hardware is
+	//   "auto" (default): per-endpoint when declared, otherwise per-device.
+	//     Steam Deck keyboard/mouse placeholders wait without timeout attempts;
+	//     its controller endpoint retains continuous keepalive reports.
+	//     Devices whose real hardware is
 	//     event-driven (Xbox family) NAK when idle; devices whose real
 	//     hardware streams continuously (DS4/DualSense/Deck/Switch) replay
 	//     the last report at each bInterval so consumers keep seeing the

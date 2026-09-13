@@ -24,7 +24,7 @@ const (
 )
 
 type SteamDeck struct {
-	gate           *device.InputGate
+	gate                *device.InputGate
 	inputState          *InputState
 	stateMu             sync.Mutex
 	featureMu           sync.Mutex
@@ -46,10 +46,10 @@ type controllerState struct {
 }
 
 var defaultSettings = map[uint8]uint16{
-	SettingLeftTrackpadMode:           TrackpadModeNone,
-	SettingRightTrackpadMode:          TrackpadModeNone,
-	SettingLizardMode:                 LizardModeOff,
-	SettingSmoothAbsoluteMouse:        0,
+	SettingLeftTrackpadMode:    TrackpadModeNone,
+	SettingRightTrackpadMode:   TrackpadModeNone,
+	SettingLizardMode:          LizardModeOff,
+	SettingSmoothAbsoluteMouse: 0,
 	// Advertise raw gyro + raw accel only (no SendOrientation): we don't compute a live
 	// orientation quaternion, so claiming orientation made Steam lean on a frozen identity
 	// quat and ignore our raw angular velocity (gyro-to-stick collapsed to center). This
@@ -84,10 +84,10 @@ var settingsOrder = []uint8{
 
 func newControllerState() controllerState {
 	state := controllerState{
-		settings:     cloneSettings(defaultSettings),
-		boardSerial:  "SteamDeck-0001",
-		unitSerial:   "SteamDeck-0001",
-		uniqueID:     0x53444543,
+		settings:    cloneSettings(defaultSettings),
+		boardSerial: "SteamDeck-0001",
+		unitSerial:  "SteamDeck-0001",
+		uniqueID:    0x53444543,
 		// Steam gates controller features on these identity attributes. A board revision and
 		// firmware build time it has never seen on a real Deck (the previous BCD-style
 		// 0x20260226 reads as the year 1987 when taken as the unix epoch Steam expects) make
@@ -113,7 +113,7 @@ func cloneDescriptor() usb.Descriptor {
 
 func New(o *device.CreateOptions) (*SteamDeck, error) {
 	d := &SteamDeck{
-		gate: device.NewInputGate(),
+		gate:       device.NewInputGate(),
 		descriptor: cloneDescriptor(),
 		inputState: &InputState{},
 		controller: newControllerState(),
@@ -145,6 +145,12 @@ func (d *SteamDeck) UpdateInputState(state *InputState) {
 	st.Frame = atomic.AddUint32(&d.frame, 1)
 	d.inputState = &st
 	d.gate.Signal()
+}
+
+// NaksWhenIdleForEndpoint keeps unused keyboard/mouse interfaces asleep without
+// changing the controller endpoint's continuous report stream.
+func (d *SteamDeck) NaksWhenIdleForEndpoint(ep uint32) bool {
+	return ep == keyboardEndpointNumber || ep == mouseEndpointNumber
 }
 
 func (d *SteamDeck) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
