@@ -63,7 +63,7 @@ import (
 // Global state
 // ---------------------------------------------------------------------------
 
-// attachTimeout bounds the usbip.exe fallback in viiper_device_attach, called while holding mu.
+// attachTimeout bounds each driver attempt in viiper_device_attach.
 const attachTimeout = 15 * time.Second
 
 var (
@@ -91,6 +91,10 @@ type deviceInfo struct {
 	dev      usb.Device
 	typeName string // resolved registry name, e.g. "xbox360", "dualshock4", "dualsenseedge", "xboxelite2", "steamcontroller"
 	port     int
+	// attaching and removing are guarded by mu. The attach and remove paths both release mu
+	// around their driver operation, and these keep them from interleaving on one device.
+	attaching bool
+	removing  bool
 }
 
 // deviceAlias describes a user-friendly device-type name and how it maps
@@ -672,35 +676,43 @@ func viiper_device_add_ex(busID C.uint32_t, typeName *C.char, vid C.uint16_t, pi
 //export viiper_device_attach
 func viiper_device_attach(busID C.uint32_t, deviceID C.uint32_t) (rc C.int) {
 	defer recoverExport(&rc)
-	mu.Lock()
-	defer mu.Unlock()
-
-	if server == nil {
-		return setError(fmt.Errorf("not initialized"))
-	}
-
 	bid := uint32(busID)
 	did := uint32(deviceID)
 	key := deviceKey{busID: bid, devID: did}
 
+	mu.Lock()
+	if server == nil {
+		mu.Unlock()
+		return setError(fmt.Errorf("not initialized"))
+	}
+	current := server
 	port := server.GetListenPort()
 	if port == 0 {
+		mu.Unlock()
 		return setError(fmt.Errorf("server listen port not available"))
 	}
+	info := devices[key]
+	if info != nil {
+		if info.removing {
+			mu.Unlock()
+			return setError(fmt.Errorf("device %d-%d is being removed", bid, did))
+		}
+		if info.attaching {
+			mu.Unlock()
+			return setError(fmt.Errorf("device %d-%d is already being attached", bid, did))
+		}
+		info.attaching = true
+	}
+	mu.Unlock()
 
+	// The driver operation runs without mu, as in viiper_device_remove. Holding it let a wedged
+	// usbip-win2 driver or a stuck usbip.exe block every other exported call, viiper_shutdown
+	// included, for as long as the attach took, which could be forever.
 	exportMeta := &usbip.ExportMeta{
 		BusId: bid,
 		DevId: did,
 	}
 	logger := slog.Default()
-
-	// A non-cancellable context here let a stuck usbip.exe on PATH block this call forever
-	// while holding mu, so every other exported call that also takes mu (including
-	// viiper_shutdown) deadlocked behind it. This bounds that fallback through
-	// exec.CommandContext. It cannot bound the IOCTL attempt: DeviceIoControl is a single
-	// blocking syscall that Go's context cannot interrupt once issued, so a wedged
-	// usbip-win2 driver still holds this goroutine indefinitely; fixing that needs
-	// overlapped I/O with its own cancel handle, a larger change than this one.
 	attachCtx, cancelAttach := context.WithTimeout(context.Background(), attachTimeout)
 	defer cancelAttach()
 
@@ -710,15 +722,34 @@ func viiper_device_attach(busID C.uint32_t, deviceID C.uint32_t) (rc C.int) {
 	attachedPort, err := api.AttachLocalhostClientWithPort(attachCtx, exportMeta, port, true, logger)
 	if err != nil && !errors.Is(err, api.ErrAttachUncertain) {
 		slog.Warn("attach via IOCTL failed, trying usbip.exe", "error", err)
-		attachedPort, err = api.AttachLocalhostClientWithPort(attachCtx, exportMeta, port, false, logger)
+		fallbackCtx, cancelFallback := context.WithTimeout(context.Background(), attachTimeout)
+		defer cancelFallback()
+		attachedPort, err = api.AttachLocalhostClientWithPort(fallbackCtx, exportMeta, port, false, logger)
 	}
+
+	mu.Lock()
+	stale := server != current || devices[key] != info || (info != nil && info.removing)
+	if info != nil {
+		info.attaching = false
+		if err == nil && !stale {
+			info.port = attachedPort
+		}
+	}
+	mu.Unlock()
+
 	if err != nil {
 		return setError(fmt.Errorf("attach device: %w", err))
 	}
-	if info := devices[key]; info != nil {
-		info.port = attachedPort
+	if stale {
+		// Removal or shutdown ran while this attach was in the driver and could not know the
+		// port; do not leave the new attachment behind.
+		detachCtx, cancelDetach := context.WithTimeout(context.Background(), attachTimeout)
+		defer cancelDetach()
+		if derr := api.DetachLocalhostClient(detachCtx, attachedPort, logger); derr != nil {
+			slog.Warn("detach after a concurrent removal failed", "busID", bid, "deviceID", did, "port", attachedPort, "error", derr)
+		}
+		return setError(fmt.Errorf("device %d-%d was removed while attaching", bid, did))
 	}
-
 	return 0
 }
 
@@ -745,6 +776,13 @@ func viiper_device_remove(busID C.uint32_t, deviceID C.uint32_t) (rc C.int) {
 	// Stop reverse calls before unplugging the client. usbip-win2 can deliver one
 	// last output packet while plugout is in progress; its device callback must not
 	// re-enter a caller that is synchronously waiting for this removal to return.
+	if info.removing {
+		mu.Unlock()
+		return setError(fmt.Errorf("device %d-%d is already being removed", bid, did))
+	}
+	// An attach in flight sees this flag when it returns and detaches its own new attachment,
+	// because the port read here cannot include it yet.
+	info.removing = true
 	feedback := feedbackCallbacks[key]
 	delete(feedbackCallbacks, key)
 	port := info.port

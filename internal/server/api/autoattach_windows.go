@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"os/exec"
 	"strconv"
+	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/Alia5/VIIPER/usbip"
@@ -118,7 +120,9 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 
 	logger.Debug("Found usbip-win2 device", "path", devicePath)
 
-	var ioctlData attachIOCTL
+	// Heap-allocated on purpose: with overlapped I/O the driver may still write into it after
+	// this function returns, and a goroutine stack can move.
+	ioctlData := new(attachIOCTL)
 
 	busID := fmt.Sprintf("%d-%d", deviceExportMeta.BusId, deviceExportMeta.DevId)
 	if len(busID) >= len(ioctlData.BusID) {
@@ -138,13 +142,15 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 		return 0, fmt.Errorf("Open: failed to convert device path: %w", err)
 	}
 
+	// Overlapped, so the request honors ctx: a synchronous DeviceIoControl cannot be interrupted
+	// once issued, and a wedged driver held the caller forever.
 	handle, err := windows.CreateFile(
 		devicePathUTF16,
 		windows.GENERIC_READ|windows.GENERIC_WRITE,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
 		nil,
 		windows.OPEN_EXISTING,
-		windows.FILE_ATTRIBUTE_NORMAL,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OVERLAPPED,
 		0,
 	)
 	if err != nil {
@@ -163,18 +169,12 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 	for index, size := range attachIOCTLSizes {
 		ioctlData.Size = size
 		ioctlData.PortOutput = 0
-		err = windows.DeviceIoControl(
-			handle,
-			ioctlPluginHardware,
-			(*byte)(unsafe.Pointer(&ioctlData)),
-			size,
-			(*byte)(unsafe.Pointer(&ioctlData)),
-			size,
-			&bytesReturned,
-			nil,
-		)
+		bytesReturned, err = pluginHardware(ctx, handle, ioctlData, size)
 		if err == nil {
 			break
+		}
+		if errors.Is(err, ErrAttachUncertain) {
+			return 0, err
 		}
 
 		if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) || index == len(attachIOCTLSizes)-1 {
@@ -198,6 +198,75 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 		"usbPort", ioctlData.PortOutput)
 
 	return int(ioctlData.PortOutput), nil
+}
+
+// ioctlCancelGrace is how long a cancelled plugin_hardware request may take to
+// complete before it is abandoned.
+const ioctlCancelGrace = 5 * time.Second
+
+// abandonedIOCTLs keeps everything a request that did not complete after
+// cancellation still refers to reachable. The I/O manager copies its output and
+// signals its event whenever the driver finally completes it.
+var (
+	abandonedMu     sync.Mutex
+	abandonedIOCTLs []any
+)
+
+// pluginHardware issues plugin_hardware as overlapped I/O and waits for it
+// under ctx. When ctx ends first the request is cancelled; a request that still
+// has not completed after ioctlCancelGrace is abandoned. Any outcome after a
+// cancellation other than success is ErrAttachUncertain, because the driver may
+// have plugged the device in before it saw the cancellation.
+func pluginHardware(ctx context.Context, handle windows.Handle, data *attachIOCTL, size uint32) (uint32, error) {
+	event, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return 0, fmt.Errorf("IOControl: CreateEvent failed: %w", err)
+	}
+	overlapped := &windows.Overlapped{HEvent: event}
+	var returned uint32
+	err = windows.DeviceIoControl(
+		handle,
+		ioctlPluginHardware,
+		(*byte)(unsafe.Pointer(data)),
+		size,
+		(*byte)(unsafe.Pointer(data)),
+		size,
+		&returned,
+		overlapped,
+	)
+	if !errors.Is(err, windows.ERROR_IO_PENDING) {
+		windows.CloseHandle(event)
+		return returned, err
+	}
+
+	completed := waitEvent(ctx, event)
+	if !completed {
+		_ = windows.CancelIoEx(handle, overlapped)
+		if r, _ := windows.WaitForSingleObject(event, uint32(ioctlCancelGrace/time.Millisecond)); r != windows.WAIT_OBJECT_0 {
+			abandonedMu.Lock()
+			abandonedIOCTLs = append(abandonedIOCTLs, event, overlapped, data)
+			abandonedMu.Unlock()
+			return 0, fmt.Errorf("%w: IOControl: plugin_hardware did not complete after cancellation: %v", ErrAttachUncertain, ctx.Err())
+		}
+	}
+	err = windows.GetOverlappedResult(handle, overlapped, &returned, false)
+	windows.CloseHandle(event)
+	if !completed && err != nil {
+		return 0, fmt.Errorf("%w: IOControl: plugin_hardware cancelled: %v (%v)", ErrAttachUncertain, ctx.Err(), err)
+	}
+	return returned, err
+}
+
+// waitEvent waits for event, returning false as soon as ctx ends first.
+func waitEvent(ctx context.Context, event windows.Handle) bool {
+	for {
+		if r, _ := windows.WaitForSingleObject(event, 50); r == windows.WAIT_OBJECT_0 {
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+	}
 }
 
 func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, logger *slog.Logger) (int, error) {
