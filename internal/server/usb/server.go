@@ -330,6 +330,11 @@ func (s *Server) ListenAndServe() error {
 	s.config.Addr = ln.Addr().String()
 	s.readyOnce.Do(func() { close(s.ready) })
 	s.logger.Info("USBIP server listening", "addr", s.config.Addr)
+	// A persistent Accept failure (handle or socket exhaustion in the host process) used to spin
+	// this loop on a core and write one line per iteration into a log that is never rotated.
+	// Failures now back off up to a second and are logged on the first and every 60th occurrence.
+	var acceptDelay time.Duration
+	acceptFailures := 0
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -337,9 +342,16 @@ func (s *Server) ListenAndServe() error {
 				s.logger.Info("USBIP server stopped")
 				return nil
 			}
-			s.logger.Error("Accept error", "error", err)
+			if acceptFailures%60 == 0 {
+				s.logger.Error("Accept error", "error", err, "consecutive", acceptFailures+1)
+			}
+			acceptFailures++
+			acceptDelay = min(max(2*acceptDelay, 5*time.Millisecond), time.Second)
+			time.Sleep(acceptDelay)
 			continue
 		}
+		acceptDelay = 0
+		acceptFailures = 0
 		if tcpConn, ok := c.(*net.TCPConn); ok {
 			if err := tcpConn.SetNoDelay(true); err != nil {
 				s.logger.Warn("failed to set TCP_NODELAY", "error", err)
