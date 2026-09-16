@@ -65,8 +65,12 @@ import (
 const attachTimeout = 15 * time.Second
 
 var (
-	mu        sync.Mutex
-	server    *usbsrv.Server
+	mu     sync.Mutex
+	server *usbsrv.Server
+
+	// errorMu guards lastError alone, so an entry point can record its error after releasing mu
+	// (viiper_device_remove does) without racing viiper_last_error.
+	errorMu   sync.Mutex
 	lastError string
 
 	// devices tracks metadata for each device we've added.
@@ -206,6 +210,8 @@ type feedbackReg struct {
 // ---------------------------------------------------------------------------
 
 func setError(err error) C.int {
+	errorMu.Lock()
+	defer errorMu.Unlock()
 	if err != nil {
 		lastError = err.Error()
 		return -1
@@ -226,8 +232,8 @@ func viiper_free_string(s *C.char) {
 
 //export viiper_last_error
 func viiper_last_error() *C.char {
-	mu.Lock()
-	defer mu.Unlock()
+	errorMu.Lock()
+	defer errorMu.Unlock()
 	if lastError == "" {
 		return nil
 	}
@@ -361,9 +367,24 @@ func viiper_init(listenAddr *C.char) C.int {
 //export viiper_shutdown
 func viiper_shutdown() {
 	mu.Lock()
-	defer mu.Unlock()
+	current := server
+	if current == nil {
+		mu.Unlock()
+		return
+	}
 
-	if server == nil {
+	// Quiesce feedback the way viiper_device_remove does, before and after teardown. A callback
+	// already past its registration check keeps running after its registration is removed, and
+	// the caller frees the callback's user data as soon as this returns. The wait happens without
+	// mu, because a callback may re-enter the API.
+	pending := takeFeedbackCallbacksLocked()
+	mu.Unlock()
+	waitFeedbackCallbacks(pending)
+
+	mu.Lock()
+	if server != current {
+		// Another shutdown completed while this one waited.
+		mu.Unlock()
 		return
 	}
 
@@ -377,10 +398,28 @@ func viiper_shutdown() {
 
 	maybeStopCPUProfile()
 
-	// Clear device tracking.
+	// Clear device tracking. Registrations made while the first drain waited are drained too;
+	// with server nil, no further registration can be made.
 	devices = make(map[deviceKey]*deviceInfo)
-	feedbackCallbacks = make(map[deviceKey]*feedbackReg)
+	pending = takeFeedbackCallbacksLocked()
 	clearX360Handles()
+	mu.Unlock()
+	waitFeedbackCallbacks(pending)
+}
+
+// takeFeedbackCallbacksLocked removes every feedback registration, so no new callback can start
+// for any of them. Must be called with mu held.
+func takeFeedbackCallbacksLocked() map[deviceKey]*feedbackReg {
+	taken := feedbackCallbacks
+	feedbackCallbacks = make(map[deviceKey]*feedbackReg)
+	return taken
+}
+
+// waitFeedbackCallbacks waits for callbacks already in flight. Must be called without mu.
+func waitFeedbackCallbacks(regs map[deviceKey]*feedbackReg) {
+	for _, reg := range regs {
+		reg.inflight.Wait()
+	}
 }
 
 // ---------------------------------------------------------------------------
