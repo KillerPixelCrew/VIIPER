@@ -730,6 +730,7 @@ func viiper_device_remove(busID C.uint32_t, deviceID C.uint32_t) C.int {
 		return setError(fmt.Errorf("device %d-%d changed during client detach", bid, did))
 	}
 	delete(devices, key)
+	releaseFastHandles(info)
 
 	didStr := fmt.Sprintf("%d", did)
 	if err := server.RemoveDeviceByID(bid, didStr); err != nil {
@@ -788,7 +789,10 @@ func viiper_device_set_input(busID C.uint32_t, deviceID C.uint32_t, data *C.uint
 
 	// Zero-copy view of the caller's buffer: decoded synchronously under mu
 	// and never retained, so no C.GoBytes heap copy is needed.
-	buf := unsafe.Slice((*byte)(unsafe.Pointer(data)), int(length))
+	buf, ok := inputView(data, length)
+	if !ok {
+		return setError(fmt.Errorf("invalid input buffer length %d", int(length)))
+	}
 	return setError(applyInput(info, buf))
 }
 
