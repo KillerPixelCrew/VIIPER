@@ -187,7 +187,9 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 	logger.Debug("IOCTL completed", "bytesReturned", bytesReturned, "portOutput", ioctlData.PortOutput)
 
 	if ioctlData.PortOutput <= 0 {
-		return 0, fmt.Errorf("ResponseValidation: invalid USB port returned: %d", ioctlData.PortOutput)
+		// The driver accepted the request, so the device may be plugged in without a port
+		// this side can detach by.
+		return 0, fmt.Errorf("%w: ResponseValidation: invalid USB port returned: %d", ErrAttachUncertain, ioctlData.PortOutput)
 	}
 
 	logger.Info("Successfully attached device via IOCTL",

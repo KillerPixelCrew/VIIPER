@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -9,6 +10,11 @@ import (
 
 	"github.com/Alia5/VIIPER/usbip"
 )
+
+// ErrAttachUncertain marks an attach that may already have plugged the device in
+// even though no usable port came back. Retrying it another way can attach the
+// same device twice, so callers must not fall back on it.
+var ErrAttachUncertain = errors.New("attach outcome uncertain")
 
 func AttachLocalhostClient(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, useNativeIOCTL bool, logger *slog.Logger) error {
 	_, err := AttachLocalhostClientWithPort(ctx, deviceExportMeta, usbipServerPort, useNativeIOCTL, logger)

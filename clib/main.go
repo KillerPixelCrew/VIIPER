@@ -23,6 +23,7 @@ import "C"
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -703,9 +704,11 @@ func viiper_device_attach(busID C.uint32_t, deviceID C.uint32_t) (rc C.int) {
 	attachCtx, cancelAttach := context.WithTimeout(context.Background(), attachTimeout)
 	defer cancelAttach()
 
-	// Try native IOCTL first, then fall back to usbip.exe command.
+	// Try native IOCTL first, then fall back to usbip.exe command, but only when the IOCTL
+	// failure proves nothing was plugged in. An uncertain outcome retried through usbip.exe
+	// produced two attachments of one device, of which removal could detach only one.
 	attachedPort, err := api.AttachLocalhostClientWithPort(attachCtx, exportMeta, port, true, logger)
-	if err != nil {
+	if err != nil && !errors.Is(err, api.ErrAttachUncertain) {
 		slog.Warn("attach via IOCTL failed, trying usbip.exe", "error", err)
 		attachedPort, err = api.AttachLocalhostClientWithPort(attachCtx, exportMeta, port, false, logger)
 	}
