@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,6 +64,7 @@ func newBatchingWriter(dst io.Writer, bufSize int, flushEvery time.Duration, flu
 }
 
 func (b *batchingWriter) flushLoop() {
+	defer recoverAndLog(slog.Default(), "write batcher")
 	t := time.NewTicker(b.flushEvery)
 	defer t.Stop()
 	for {
@@ -245,6 +247,7 @@ func (s *Server) RemoveDeviceByID(busID uint32, deviceID string) error {
 
 	if emptyCtx := bus.GetBusEmptyContext(); emptyCtx != nil {
 		go func() {
+			defer recoverAndLog(s.logger, "bus cleanup")
 			slog.Debug("Started bus cleanup goroutine (RemoveDeviceByID)")
 			select {
 			case <-emptyCtx.Done():
@@ -359,6 +362,12 @@ func (s *Server) ListenAndServe() error {
 		}
 		s.logger.Info("Client connected", "remote", c.RemoteAddr())
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logPanic(s.logger, "connection handler", r)
+					_ = c.Close()
+				}
+			}()
 			if err := s.handleConn(c); err != nil {
 				if isClientDisconnect(err) {
 					s.logger.Info("Client disconnected", "error", err)
@@ -368,6 +377,18 @@ func (s *Server) ListenAndServe() error {
 			}
 		}()
 	}
+}
+
+// recoverAndLog logs a panic in a background goroutine instead of letting it
+// abort the process that embeds the server. Use it directly with defer.
+func recoverAndLog(logger *slog.Logger, where string) {
+	if r := recover(); r != nil {
+		logPanic(logger, where, r)
+	}
+}
+
+func logPanic(logger *slog.Logger, where string, r any) {
+	logger.Error("recovered panic", "where", where, "panic", r, "stack", string(debug.Stack()))
 }
 
 // Ready returns a channel that is closed once the server has successfully bound
@@ -691,6 +712,16 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		// device can declare this per endpoint or for the whole device.
 		nakIdle := interruptInNAKIdle(dev, ep, s.config.IdleMode)
 		go func() {
+			// A panicking worker ends the stream: the connection is closed so the reader
+			// returns, and the queue is drained so a sender blocked on it is released.
+			defer func() {
+				if r := recover(); r != nil {
+					logPanic(s.logger, "interrupt-IN worker", r)
+					_ = conn.Close()
+					for range jobs {
+					}
+				}
+			}()
 			var frame bytes.Buffer
 			var last []byte
 			haveLast := false
@@ -807,6 +838,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			busID := owningBus.BusID()
 			if emptyCtx := owningBus.GetBusEmptyContext(); emptyCtx != nil {
 				go func() {
+					defer recoverAndLog(s.logger, "bus cleanup")
 					slog.Debug("Started bus cleanup goroutine (HandleUrbStream ctx.Done)")
 					select {
 					case <-emptyCtx.Done():

@@ -161,7 +161,8 @@ func inputView(data *C.uint8_t, length C.int) ([]byte, bool) {
 // and buffer copy. Same lifetime rules as the typed handles.
 //
 //export viiper_device_open_fast
-func viiper_device_open_fast(busID C.uint32_t, deviceID C.uint32_t, outHandle *C.uint32_t) C.int {
+func viiper_device_open_fast(busID C.uint32_t, deviceID C.uint32_t, outHandle *C.uint32_t) (rc C.int) {
+	defer recoverExport(&rc)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -190,7 +191,8 @@ func viiper_device_open_fast(busID C.uint32_t, deviceID C.uint32_t, outHandle *C
 // -2 for a decode/apply error.
 //
 //export viiper_device_set_input_fast
-func viiper_device_set_input_fast(handle C.uint32_t, data *C.uint8_t, length C.int) C.int {
+func viiper_device_set_input_fast(handle C.uint32_t, data *C.uint8_t, length C.int) (rc C.int) {
+	defer recoverExport(&rc)
 	info, ok := fastHandles.get(uint32(handle))
 	if !ok {
 		return -1
@@ -206,7 +208,8 @@ func viiper_device_set_input_fast(handle C.uint32_t, data *C.uint8_t, length C.i
 }
 
 //export viiper_device_open_x360
-func viiper_device_open_x360(busID C.uint32_t, deviceID C.uint32_t, outHandle *C.uint32_t) C.int {
+func viiper_device_open_x360(busID C.uint32_t, deviceID C.uint32_t, outHandle *C.uint32_t) (rc C.int) {
+	defer recoverExport(&rc)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -238,7 +241,8 @@ func viiper_device_open_x360(busID C.uint32_t, deviceID C.uint32_t, outHandle *C
 // for an invalid handle and 0 on success.
 //
 //export viiper_device_set_input_x360
-func viiper_device_set_input_x360(handle C.uint32_t, buttons C.uint32_t, lt C.uint8_t, rt C.uint8_t, lx C.int16_t, ly C.int16_t, rx C.int16_t, ry C.int16_t) C.int {
+func viiper_device_set_input_x360(handle C.uint32_t, buttons C.uint32_t, lt C.uint8_t, rt C.uint8_t, lx C.int16_t, ly C.int16_t, rx C.int16_t, ry C.int16_t) (rc C.int) {
+	defer recoverExport(&rc)
 	xdev, ok := x360Handles.get(uint32(handle))
 	if !ok {
 		return -1
@@ -256,7 +260,8 @@ func viiper_device_set_input_x360(handle C.uint32_t, buttons C.uint32_t, lt C.ui
 }
 
 //export viiper_device_open_ds4
-func viiper_device_open_ds4(busID C.uint32_t, deviceID C.uint32_t, outHandle *C.uint32_t) C.int {
+func viiper_device_open_ds4(busID C.uint32_t, deviceID C.uint32_t, outHandle *C.uint32_t) (rc C.int) {
+	defer recoverExport(&rc)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -290,7 +295,8 @@ func viiper_device_open_ds4(busID C.uint32_t, deviceID C.uint32_t, outHandle *C.
 // handle, -2 on a malformed buffer.
 //
 //export viiper_device_set_input_ds4
-func viiper_device_set_input_ds4(handle C.uint32_t, data *C.uint8_t, length C.int) C.int {
+func viiper_device_set_input_ds4(handle C.uint32_t, data *C.uint8_t, length C.int) (rc C.int) {
+	defer recoverExport(&rc)
 	ds4, ok := ds4Handles.get(uint32(handle))
 	if !ok {
 		return -1

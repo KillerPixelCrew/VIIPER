@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"runtime/pprof"
 	"strconv"
 	"strings"
@@ -209,6 +210,30 @@ type feedbackReg struct {
 // Error helpers
 // ---------------------------------------------------------------------------
 
+// recoverExport turns a Go panic in an exported call into an error return.
+// Unrecovered, a panic on a cgo callback frame aborts the whole host process,
+// which no managed caller can catch. It must be the first deferred call, so it
+// runs after the function's own deferred unlocks. result may be nil for calls
+// with no status to report.
+func recoverExport(result *C.int) {
+	r := recover()
+	if r == nil {
+		return
+	}
+	slog.Error("recovered panic in exported call", "panic", r, "stack", string(debug.Stack()))
+	if result != nil {
+		*result = setError(fmt.Errorf("internal error: %v", r))
+	}
+}
+
+// recoverGoroutine logs a panic in a background goroutine instead of letting it
+// abort the host process.
+func recoverGoroutine(where string) {
+	if r := recover(); r != nil {
+		slog.Error("recovered panic", "where", where, "panic", r, "stack", string(debug.Stack()))
+	}
+}
+
 func setError(err error) C.int {
 	errorMu.Lock()
 	defer errorMu.Unlock()
@@ -231,7 +256,8 @@ func viiper_free_string(s *C.char) {
 }
 
 //export viiper_last_error
-func viiper_last_error() *C.char {
+func viiper_last_error() (out *C.char) {
+	defer recoverExport(nil)
 	errorMu.Lock()
 	defer errorMu.Unlock()
 	if lastError == "" {
@@ -297,7 +323,8 @@ func idleModeFromEnv() string {
 }
 
 //export viiper_init
-func viiper_init(listenAddr *C.char) C.int {
+func viiper_init(listenAddr *C.char) (rc C.int) {
+	defer recoverExport(&rc)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -345,6 +372,7 @@ func viiper_init(listenAddr *C.char) C.int {
 	server = usbsrv.New(cfg, logger, nil)
 
 	go func() {
+		defer recoverGoroutine("USBIP server")
 		if err := server.ListenAndServe(); err != nil {
 			slog.Error("USBIP server error", "error", err)
 		}
@@ -366,6 +394,7 @@ func viiper_init(listenAddr *C.char) C.int {
 
 //export viiper_shutdown
 func viiper_shutdown() {
+	defer recoverExport(nil)
 	mu.Lock()
 	current := server
 	if current == nil {
@@ -381,11 +410,18 @@ func viiper_shutdown() {
 	mu.Unlock()
 	waitFeedbackCallbacks(pending)
 
+	waitFeedbackCallbacks(tearDownServer(current))
+}
+
+// tearDownServer stops current and clears all device tracking, returning the
+// feedback registrations made while the first drain waited, with server nil so
+// no further registration can be made. It returns nil when another shutdown
+// completed first.
+func tearDownServer(current *usbsrv.Server) map[deviceKey]*feedbackReg {
 	mu.Lock()
+	defer mu.Unlock()
 	if server != current {
-		// Another shutdown completed while this one waited.
-		mu.Unlock()
-		return
+		return nil
 	}
 
 	// Remove all buses (which removes all devices).
@@ -398,13 +434,9 @@ func viiper_shutdown() {
 
 	maybeStopCPUProfile()
 
-	// Clear device tracking. Registrations made while the first drain waited are drained too;
-	// with server nil, no further registration can be made.
 	devices = make(map[deviceKey]*deviceInfo)
-	pending = takeFeedbackCallbacksLocked()
 	clearX360Handles()
-	mu.Unlock()
-	waitFeedbackCallbacks(pending)
+	return takeFeedbackCallbacksLocked()
 }
 
 // takeFeedbackCallbacksLocked removes every feedback registration, so no new callback can start
@@ -427,7 +459,8 @@ func waitFeedbackCallbacks(regs map[deviceKey]*feedbackReg) {
 // ---------------------------------------------------------------------------
 
 //export viiper_bus_create
-func viiper_bus_create(busID C.uint32_t) C.int {
+func viiper_bus_create(busID C.uint32_t) (rc C.int) {
+	defer recoverExport(&rc)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -449,7 +482,8 @@ func viiper_bus_create(busID C.uint32_t) C.int {
 }
 
 //export viiper_bus_remove
-func viiper_bus_remove(busID C.uint32_t) C.int {
+func viiper_bus_remove(busID C.uint32_t) (rc C.int) {
+	defer recoverExport(&rc)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -479,7 +513,8 @@ func viiper_bus_remove(busID C.uint32_t) C.int {
 // ---------------------------------------------------------------------------
 
 //export viiper_device_add
-func viiper_device_add(busID C.uint32_t, typeName *C.char, outDeviceID *C.uint32_t) C.int {
+func viiper_device_add(busID C.uint32_t, typeName *C.char, outDeviceID *C.uint32_t) (rc C.int) {
+	defer recoverExport(&rc)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -558,7 +593,8 @@ func viiper_device_add(busID C.uint32_t, typeName *C.char, outDeviceID *C.uint32
 // Pass 0 for vid or pid to use the default for the device type/profile.
 //
 //export viiper_device_add_ex
-func viiper_device_add_ex(busID C.uint32_t, typeName *C.char, vid C.uint16_t, pid C.uint16_t, outDeviceID *C.uint32_t) C.int {
+func viiper_device_add_ex(busID C.uint32_t, typeName *C.char, vid C.uint16_t, pid C.uint16_t, outDeviceID *C.uint32_t) (rc C.int) {
+	defer recoverExport(&rc)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -633,7 +669,8 @@ func viiper_device_add_ex(busID C.uint32_t, typeName *C.char, vid C.uint16_t, pi
 // This is called automatically by viiper_device_add, but can be called separately if needed.
 //
 //export viiper_device_attach
-func viiper_device_attach(busID C.uint32_t, deviceID C.uint32_t) C.int {
+func viiper_device_attach(busID C.uint32_t, deviceID C.uint32_t) (rc C.int) {
+	defer recoverExport(&rc)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -683,7 +720,8 @@ func viiper_device_attach(busID C.uint32_t, deviceID C.uint32_t) C.int {
 }
 
 //export viiper_device_remove
-func viiper_device_remove(busID C.uint32_t, deviceID C.uint32_t) C.int {
+func viiper_device_remove(busID C.uint32_t, deviceID C.uint32_t) (rc C.int) {
+	defer recoverExport(&rc)
 	mu.Lock()
 
 	if server == nil {
@@ -741,7 +779,8 @@ func viiper_device_remove(busID C.uint32_t, deviceID C.uint32_t) C.int {
 }
 
 //export viiper_list_device_types
-func viiper_list_device_types() *C.char {
+func viiper_list_device_types() (out *C.char) {
+	defer recoverExport(nil)
 	types := api.ListDeviceTypes()
 
 	// Filter out non-controller devices and add user-friendly aliases.
@@ -773,7 +812,8 @@ func viiper_list_device_types() *C.char {
 // ---------------------------------------------------------------------------
 
 //export viiper_device_set_input
-func viiper_device_set_input(busID C.uint32_t, deviceID C.uint32_t, data *C.uint8_t, length C.int) C.int {
+func viiper_device_set_input(busID C.uint32_t, deviceID C.uint32_t, data *C.uint8_t, length C.int) (rc C.int) {
+	defer recoverExport(&rc)
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -942,7 +982,8 @@ func applyInput(info *deviceInfo, buf []byte) error {
 // ---------------------------------------------------------------------------
 
 //export viiper_device_set_feedback_callback
-func viiper_device_set_feedback_callback(busID C.uint32_t, deviceID C.uint32_t, cb C.viiper_feedback_fn, userData unsafe.Pointer) C.int {
+func viiper_device_set_feedback_callback(busID C.uint32_t, deviceID C.uint32_t, cb C.viiper_feedback_fn, userData unsafe.Pointer) (rc C.int) {
+	defer recoverExport(&rc)
 	mu.Lock()
 	defer mu.Unlock()
 
