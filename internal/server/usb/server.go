@@ -174,6 +174,7 @@ type Server struct {
 	busesMu   sync.Mutex
 	ready     chan struct{}
 	readyOnce sync.Once
+	readyErr  error
 	ln        net.Listener
 }
 
@@ -317,6 +318,12 @@ func (s *Server) Addr() string {
 func (s *Server) ListenAndServe() error {
 	ln, err := net.Listen("tcp", s.config.Addr)
 	if err != nil {
+		// Close ready here too: a caller waiting on Ready() to know the listener is bound
+		// would otherwise block forever on a bind failure, since nothing else closes the
+		// channel. readyErr is written before the close and read only after Ready()
+		// unblocks a receiver, so the close is the happens-before edge for it.
+		s.readyErr = err
+		s.readyOnce.Do(func() { close(s.ready) })
 		return err
 	}
 	s.ln = ln
@@ -354,6 +361,10 @@ func (s *Server) ListenAndServe() error {
 // Ready returns a channel that is closed once the server has successfully bound
 // to its listen address and is ready to accept connections.
 func (s *Server) Ready() <-chan struct{} { return s.ready }
+
+// ReadyErr returns the listener bind error after Ready() has unblocked a receiver, or nil when
+// the server is actually listening. Reading it before Ready() closes is meaningless.
+func (s *Server) ReadyErr() error { return s.readyErr }
 
 // Close stops the USB server by closing its listener.
 func (s *Server) Close() error {

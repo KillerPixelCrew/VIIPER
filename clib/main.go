@@ -341,8 +341,14 @@ func viiper_init(listenAddr *C.char) C.int {
 		}
 	}()
 
-	// Wait for the server to be ready (listener bound).
+	// Wait for the server to be ready (listener bound). ListenAndServe closes Ready() on a bind
+	// failure too, specifically so this cannot block forever holding mu; ReadyErr distinguishes
+	// that case from an actual successful bind.
 	<-server.Ready()
+	if err := server.ReadyErr(); err != nil {
+		server = nil
+		return setError(fmt.Errorf("listen: %w", err))
+	}
 
 	maybeStartCPUProfile()
 
