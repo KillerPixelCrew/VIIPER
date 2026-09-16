@@ -61,6 +61,9 @@ import (
 // Global state
 // ---------------------------------------------------------------------------
 
+// attachTimeout bounds the usbip.exe fallback in viiper_device_attach, called while holding mu.
+const attachTimeout = 15 * time.Second
+
 var (
 	mu        sync.Mutex
 	server    *usbsrv.Server
@@ -614,11 +617,21 @@ func viiper_device_attach(busID C.uint32_t, deviceID C.uint32_t) C.int {
 	}
 	logger := slog.Default()
 
+	// A non-cancellable context here let a stuck usbip.exe on PATH block this call forever
+	// while holding mu, so every other exported call that also takes mu (including
+	// viiper_shutdown) deadlocked behind it. This bounds that fallback through
+	// exec.CommandContext. It cannot bound the IOCTL attempt: DeviceIoControl is a single
+	// blocking syscall that Go's context cannot interrupt once issued, so a wedged
+	// usbip-win2 driver still holds this goroutine indefinitely; fixing that needs
+	// overlapped I/O with its own cancel handle, a larger change than this one.
+	attachCtx, cancelAttach := context.WithTimeout(context.Background(), attachTimeout)
+	defer cancelAttach()
+
 	// Try native IOCTL first, then fall back to usbip.exe command.
-	attachedPort, err := api.AttachLocalhostClientWithPort(context.Background(), exportMeta, port, true, logger)
+	attachedPort, err := api.AttachLocalhostClientWithPort(attachCtx, exportMeta, port, true, logger)
 	if err != nil {
 		slog.Warn("attach via IOCTL failed, trying usbip.exe", "error", err)
-		attachedPort, err = api.AttachLocalhostClientWithPort(context.Background(), exportMeta, port, false, logger)
+		attachedPort, err = api.AttachLocalhostClientWithPort(attachCtx, exportMeta, port, false, logger)
 	}
 	if err != nil {
 		return setError(fmt.Errorf("attach device: %w", err))
