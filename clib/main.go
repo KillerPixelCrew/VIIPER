@@ -63,6 +63,13 @@ import (
 // Global state
 // ---------------------------------------------------------------------------
 
+// Set by eng/build-viiper.ps1 through -ldflags -X, so a staged library names the
+// VIIPER commit it was built from.
+var (
+	buildRevision = "unknown"
+	buildModified = "unknown"
+)
+
 // attachTimeout bounds each driver attempt in viiper_device_attach.
 const attachTimeout = 15 * time.Second
 
@@ -362,6 +369,7 @@ func viiper_init(listenAddr *C.char) (rc C.int) {
 		}
 	}
 	logger := slog.Default()
+	logger.Info("libviiper starting", "revision", buildRevision, "modified", buildModified)
 
 	cfg := usbsrv.ServerConfig{
 		Addr:                    addr,
