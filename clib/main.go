@@ -716,8 +716,8 @@ func viiper_device_attach(busID C.uint32_t, deviceID C.uint32_t) (rc C.int) {
 	// usbip-win2 driver or a stuck usbip.exe block every other exported call, viiper_shutdown
 	// included, for as long as the attach took, which could be forever.
 	exportMeta := &usbip.ExportMeta{
-		BusId: bid,
-		DevId: did,
+		BusID: bid,
+		DevID: did,
 	}
 	logger := slog.Default()
 	attachCtx, cancelAttach := context.WithTimeout(context.Background(), attachTimeout)
