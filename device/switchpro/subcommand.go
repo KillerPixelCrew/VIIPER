@@ -86,7 +86,7 @@ func (d *SwitchPro) handleSubcommand(data []byte) {
 	case SubcmdDeviceInfo:
 		replyData = d.replyDeviceInfo()
 	case SubcmdSetInputMode:
-		replyData = d.replySetInputMode(data)
+		d.replySetInputMode(data)
 	case SubcmdTriggerElapsed:
 		replyData = d.replyTriggerElapsed()
 	case SubcmdSetShipment:
@@ -94,13 +94,13 @@ func (d *SwitchPro) handleSubcommand(data []byte) {
 	case SubcmdSPIFlashRead:
 		replyData = d.replySPIFlashRead(data)
 	case SubcmdSetPlayerLights:
-		replyData = d.replySetPlayerLights(data)
+		d.replySetPlayerLights(data)
 	case SubcmdSetHomeLED:
 		replyData = nil // ACK only
 	case SubcmdEnableIMU:
-		replyData = d.replyEnableIMU(data)
+		d.replyEnableIMU(data)
 	case SubcmdEnableVibration:
-		replyData = d.replyEnableVibration(data)
+		d.replyEnableVibration(data)
 	default:
 		slog.Info("SwitchPro: unknown subcommand", "subcmd", subcmd)
 		replyData = nil
@@ -195,13 +195,12 @@ func (d *SwitchPro) replyDeviceInfo() []byte {
 }
 
 // replySetInputMode handles subcommand 0x03 (set input report mode).
-func (d *SwitchPro) replySetInputMode(data []byte) []byte {
+func (d *SwitchPro) replySetInputMode(data []byte) {
 	if len(data) >= 12 {
 		mode := data[11]
 		slog.Info("SwitchPro: subcommand - set input mode", "mode", mode)
 	}
 	// Always accept, we always send 0x30 full reports.
-	return nil
 }
 
 // replyTriggerElapsed handles subcommand 0x04.
@@ -291,28 +290,25 @@ func (d *SwitchPro) replySPIFlashRead(data []byte) []byte {
 }
 
 // replySetPlayerLights handles subcommand 0x30.
-func (d *SwitchPro) replySetPlayerLights(data []byte) []byte {
+func (d *SwitchPro) replySetPlayerLights(data []byte) {
 	if len(data) >= 12 {
 		d.playerLights = data[11]
 		slog.Info("SwitchPro: subcommand - set player lights", "pattern", d.playerLights)
 	}
-	return nil
 }
 
 // replyEnableIMU handles subcommand 0x40.
-func (d *SwitchPro) replyEnableIMU(data []byte) []byte {
+func (d *SwitchPro) replyEnableIMU(data []byte) {
 	if len(data) >= 12 {
 		d.imuEnabled = data[11] != 0
 		slog.Info("SwitchPro: subcommand - enable IMU", "enabled", d.imuEnabled)
 	}
-	return nil
 }
 
 // replyEnableVibration handles subcommand 0x48.
-func (d *SwitchPro) replyEnableVibration(data []byte) []byte {
+func (d *SwitchPro) replyEnableVibration(data []byte) {
 	if len(data) >= 12 {
 		d.vibEnabled = data[11] != 0
 		slog.Info("SwitchPro: subcommand - enable vibration", "enabled", d.vibEnabled)
 	}
-	return nil
 }

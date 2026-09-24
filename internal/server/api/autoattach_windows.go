@@ -187,7 +187,7 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 	if err != nil {
 		return 0, fmt.Errorf("open: failed to open usbip-win2 device: %w", err)
 	}
-	defer windows.CloseHandle(handle)
+	defer windows.CloseHandle(handle) //nolint:errcheck // cleanup; nothing to do on failure
 
 	logger.Debug("Opened device handle")
 
@@ -266,7 +266,7 @@ func pluginHardware(ctx context.Context, handle windows.Handle, data *attachIOCT
 		overlapped,
 	)
 	if !errors.Is(err, windows.ERROR_IO_PENDING) {
-		windows.CloseHandle(event)
+		windows.CloseHandle(event) //nolint:errcheck // cleanup; nothing to do on failure
 		return returned, err
 	}
 
@@ -281,7 +281,7 @@ func pluginHardware(ctx context.Context, handle windows.Handle, data *attachIOCT
 		}
 	}
 	err = windows.GetOverlappedResult(handle, overlapped, &returned, false)
-	windows.CloseHandle(event)
+	windows.CloseHandle(event) //nolint:errcheck // cleanup; nothing to do on failure
 	if !completed && err != nil {
 		return 0, fmt.Errorf("%w: IOControl: plugin_hardware cancelled: %v (%v)", ErrAttachUncertain, ctx.Err(), err)
 	}
@@ -369,7 +369,7 @@ func detachViaIOCTL(port int, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("open: failed to open usbip-win2 device: %w", err)
 	}
-	defer windows.CloseHandle(handle)
+	defer windows.CloseHandle(handle) //nolint:errcheck // cleanup; nothing to do on failure
 
 	data := plugoutHardware{Size: uint32(unsafe.Sizeof(plugoutHardware{})), Port: int32(port)}
 	var bytesReturned uint32
@@ -405,7 +405,7 @@ func getDeviceInterfacePath(guid *windows.GUID) (string, error) {
 		return "", fmt.Errorf("discovery: SetupDiGetClassDevsW failed with invalid handle")
 	}
 	defer func() {
-		syscall.SyscallN(procSetupDiDestroyDeviceInfoList.Addr(), uintptr(devInfo))
+		syscall.SyscallN(procSetupDiDestroyDeviceInfoList.Addr(), uintptr(devInfo)) //nolint:errcheck // cleanup; nothing to do on failure
 	}()
 
 	var interfaceData SpDeviceInterfaceData

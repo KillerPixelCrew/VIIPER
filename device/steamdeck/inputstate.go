@@ -5,6 +5,7 @@ import (
 	"io"
 )
 
+// nolint
 // viiper:wire steamdeck c2s a:bool x:bool b:bool y:bool l1:bool r1:bool l2Digital:bool r2Digital:bool l5:bool menu:bool steam:bool options:bool dpadDown:bool dpadLeft:bool dpadRight:bool dpadUp:bool l3:bool rPadTouch:bool lPadTouch:bool rPadPress:bool lPadPress:bool r5:bool r3:bool rStickTouch:bool lStickTouch:bool r4:bool l4:bool quickAccess:bool lPadX:i16 lPadY:i16 rPadX:i16 rPadY:i16 accelX:i16 accelY:i16 accelZ:i16 pitch:i16 yaw:i16 roll:i16 gyroQuatW:i16 gyroQuatX:i16 gyroQuatY:i16 gyroQuatZ:i16 lTrigger:u16 rTrigger:u16 lStickX:i16 lStickY:i16 rStickX:i16 rStickY:i16 lPadForce:u16 rPadForce:u16 lStickForce:u16 rStickForce:u16
 type InputState struct {
 	A, X, B, Y     bool

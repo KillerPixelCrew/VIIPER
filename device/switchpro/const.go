@@ -95,7 +95,7 @@ const (
 	USBCmdForceHID    = 0x04
 )
 
-// Battery / connection status byte (byte 2 of 0x30 report).
+// BatteryFull is the battery / connection status byte (byte 2 of the 0x30 report).
 const BatteryFull uint8 = 0x8E // Battery full, USB connected
 
 // Pro Controller HID report descriptor — exact bytes from real hardware.

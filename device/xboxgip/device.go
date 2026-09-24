@@ -171,8 +171,8 @@ func (d *XboxGIP) logf(format string, args ...any) {
 	}
 	msg := fmt.Sprintf(format, args...)
 	ts := time.Now().Format("15:04:05.000")
-	fmt.Fprintf(d.debugLog, "%s  %s\n", ts, msg)
-	d.debugLog.Sync()
+	_, _ = fmt.Fprintf(d.debugLog, "%s  %s\n", ts, msg)
+	_ = d.debugLog.Sync()
 }
 
 // nextSeq returns the next GIP sequence number (1-255 wrapping).

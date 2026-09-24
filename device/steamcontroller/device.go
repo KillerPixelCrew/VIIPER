@@ -40,6 +40,8 @@ var firmwareDefaultSettings = map[uint8]uint16{
 }
 
 // Steam programs a smaller runtime delta after loading defaults.
+//
+//nolint:unused // records what Steam programs; the device answers from its defaults
 var steamRuntimeSettings = map[uint8]uint16{
 	SettingLeftTrackpadMode:    TrackpadModeNone,
 	SettingRightTrackpadMode:   TrackpadModeNone,

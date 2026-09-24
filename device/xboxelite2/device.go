@@ -403,17 +403,6 @@ func (x *XboxElite2) HandleControl(bmRequestType, bRequest uint8, wValue, _ uint
 	return nil, false
 }
 
-// clampI16 converts a float64 to int16 with saturation.
-func clampI16(v float64) int16 {
-	if v > 32767 {
-		return 32767
-	}
-	if v < -32767 {
-		return -32767
-	}
-	return int16(v)
-}
-
 // NaksWhenIdle reports that real Elite Series 2 pads are event-driven.
 func (x *XboxElite2) NaksWhenIdle() bool { return true }
 

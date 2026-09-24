@@ -49,6 +49,12 @@ linters:
       linters:
       - errcheck
       - staticcheck
+    # clib exports a C ABI whose names are viiper_* by design, and cgo generates
+    # underscore names of its own.
+    - path: clib/
+      linters:
+      - staticcheck
+      text: ST1003
 
 formatters:
   enable:

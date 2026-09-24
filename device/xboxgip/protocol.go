@@ -39,7 +39,8 @@ var (
 	guidNavigationController = [16]byte{0xE7, 0x1F, 0xF3, 0xB8, 0x86, 0x73, 0xE9, 0x40, 0xA9, 0xF8, 0x2F, 0x21, 0x26, 0x3A, 0xCF, 0xB7}
 	guidDevAuthPCOptOut      = [16]byte{0x77, 0xCE, 0x34, 0x7A, 0xE2, 0x7D, 0xC6, 0x45, 0x8C, 0xA4, 0x00, 0x42, 0xC0, 0x8B, 0xD9, 0x4A}
 	guidEliteButtons         = [16]byte{0xF7, 0x9F, 0xD1, 0x37, 0xC6, 0xB5, 0xD1, 0x49, 0xA7, 0x5E, 0x03, 0xB2, 0x4B, 0xEF, 0x8C, 0x89}
-	guidVirtualDevice        = [16]byte{0x25, 0x68, 0xD2, 0xDF, 0x0A, 0x11, 0x94, 0x4E, 0xB9, 0x37, 0xB2, 0x7C, 0xE4, 0x7B, 0x25, 0x40}
+	//nolint:unused // protocol reference for the unfinished GIP work
+	guidVirtualDevice = [16]byte{0x25, 0x68, 0xD2, 0xDF, 0x0A, 0x11, 0x94, 0x4E, 0xB9, 0x37, 0xB2, 0x7C, 0xE4, 0x7B, 0x25, 0x40}
 )
 
 // buildMetadataBlob constructs the GIP metadata blob byte-for-byte
@@ -302,6 +303,8 @@ func buildStatusMessage(seq uint8) []byte {
 //	bytes 8-9: minor u16 LE
 //	bytes 10-11: build u16 LE
 //	bytes 12-13: revision u16 LE
+//
+//nolint:unused // protocol reference for the unfinished GIP work
 func buildFirmwareMessage(seq uint8) []byte {
 	b := make([]byte, 18) // 4-byte header + 14-byte payload
 	b[0] = 0x0C           // GIP_CMD_FIRMWARE
@@ -318,6 +321,7 @@ func buildFirmwareMessage(seq uint8) []byte {
 	return b
 }
 
+//nolint:unused // protocol reference for the unfinished GIP work
 func appendGIPLEB128(dst []byte, v int) []byte {
 	for {
 		b := byte(v & 0x7f)
@@ -574,6 +578,8 @@ func buildInputReport(state *InputState, seq uint8) []byte {
 }
 
 // buildAcknowledge builds a GIP ACK message for a received command.
+//
+//nolint:unused // protocol reference for the unfinished GIP work
 func buildAcknowledge(origSeq uint8, origCmd uint8, bytesReceived uint16) []byte {
 	b := make([]byte, 13)
 	b[0] = GIPAcknowledge // 0x01

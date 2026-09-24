@@ -23,7 +23,6 @@ type SwitchPro struct {
 	descriptor   usb.Descriptor
 	profile      string
 	timer        uint8 // incrementing report counter
-	packetNumber uint8 // global packet number for subcommand replies
 	imuEnabled   bool
 	vibEnabled   bool
 	playerLights uint8
