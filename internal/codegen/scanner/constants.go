@@ -50,6 +50,7 @@ func ScanDeviceConstants(devicePkgPath string) (*DeviceConstants, error) {
 	}
 
 	fset := token.NewFileSet()
+	var constDecls []*ast.GenDecl
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
 			continue
@@ -65,7 +66,7 @@ func ScanDeviceConstants(devicePkgPath string) (*DeviceConstants, error) {
 			if genDecl, ok := decl.(*ast.GenDecl); ok {
 				switch genDecl.Tok {
 				case token.CONST:
-					result.Constants = append(result.Constants, extractConstants(genDecl, constEnv)...)
+					constDecls = append(constDecls, genDecl)
 				case token.VAR:
 					maps := extractMaps(genDecl)
 					result.Maps = append(result.Maps, maps...)
@@ -74,7 +75,33 @@ func ScanDeviceConstants(devicePkgPath string) (*DeviceConstants, error) {
 		}
 	}
 
+	result.Constants = resolveConstants(constDecls, constEnv)
 	return result, nil
+}
+
+// maxConstantPasses bounds how deep a chain of forward references can be
+// resolved; real packages need two or three passes.
+const maxConstantPasses = 8
+
+// resolveConstants evaluates the package's constant declarations until the
+// values stop changing. Go lets a constant refer to one declared later, in the
+// same file or another, so a single in-order pass would leave such references
+// as their unresolved names.
+func resolveConstants(decls []*ast.GenDecl, env map[string]ConstantInfo) []ConstantInfo {
+	var constants []ConstantInfo
+	previous := ""
+	for range maxConstantPasses {
+		constants = constants[:0]
+		for _, decl := range decls {
+			constants = append(constants, extractConstants(decl, env)...)
+		}
+		current := fmt.Sprintf("%v", constants)
+		if current == previous {
+			break
+		}
+		previous = current
+	}
+	return constants
 }
 
 func parseFile(fset *token.FileSet, filePath string) (*ast.File, error) {

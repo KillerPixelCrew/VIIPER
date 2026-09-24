@@ -81,6 +81,7 @@ func CreateMouseDevice(
 	}
 	exportMeta := device.GetDeviceMeta(devCtx)
 	if exportMeta == nil {
+		_ = bus.Remove(d)
 		return false
 	}
 
@@ -94,6 +95,8 @@ func CreateMouseDevice(
 		)
 		if err != nil {
 			slog.Error("failed to auto-attach localhost client", "error", err)
+			// No handle is returned, so the caller could never remove it.
+			_ = bus.Remove(d)
 			return false
 		}
 	}

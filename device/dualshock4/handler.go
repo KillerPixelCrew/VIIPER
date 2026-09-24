@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/internal/server/api"
@@ -18,7 +19,8 @@ func init() {
 
 type handler struct{}
 
-var serials = map[string]struct{}{}
+// serials holds the serial numbers of DualShock 4 devices in use.
+var serials = device.NewIdentityPool()
 
 func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	if o == nil {
@@ -35,37 +37,29 @@ func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	if metaState.SerialNumber != "" {
 		serial = metaState.SerialNumber
 	}
-	serial = fmt.Sprintf("%016s", serial)
-	if _, ok := serials[serial]; ok {
-		for i := 1; i < 16; i++ {
-			newSerial := fmt.Sprintf("%s%02X", serial[:len(serial)-2], i)
-			if _, ok := serials[newSerial]; !ok {
-				serial = newSerial
-				break
-			}
-		}
+	// The wire format is 16 hex digits; zero-pad, as space padding does not decode.
+	if len(serial) < 16 {
+		serial = strings.Repeat("0", 16-len(serial)) + serial
 	}
-	metaState.SerialNumber = serial
-	serials[serial] = struct{}{}
+	metaState.SerialNumber = serials.Reserve(serial)
 	b, err := json.Marshal(metaState)
 	if err != nil {
 		return nil, fmt.Errorf("marshal meta state: %w", err)
 	}
 	o.DeviceSpecific = string(b)
-	return New(o)
+	d, err := New(o)
+	if err != nil {
+		serials.Release(metaState.SerialNumber)
+		return nil, err
+	}
+	// Held for as long as the device is on the bus, not for one stream.
+	reserved := metaState.SerialNumber
+	d.OnRelease(func() { serials.Release(reserved) })
+	return d, nil
 }
 
 func (h *handler) StreamHandler() api.StreamHandlerFunc {
 	return func(conn net.Conn, devPtr *usb.Device, logger *slog.Logger) error {
-		defer func() {
-			ds4, ok := (*devPtr).(*DualShock4)
-			if !ok {
-				slog.Warn("device is not DualShock4 on disconnect")
-				return
-			}
-			delete(serials, ds4.metaState.SerialNumber)
-			slog.Debug("DS4 disconnected, serial released", "serial", ds4.metaState.SerialNumber)
-		}()
 		if devPtr == nil || *devPtr == nil {
 			return fmt.Errorf("nil device")
 		}

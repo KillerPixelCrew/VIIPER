@@ -16,6 +16,8 @@ import (
 )
 
 type DualShock4 struct {
+	device.Releaser
+
 	gate *device.InputGate
 	// inputState is stored by value, so UpdateInputState copies the caller's state instead of
 	// retaining its pointer, and a caller that reuses one state per frame never allocates. The

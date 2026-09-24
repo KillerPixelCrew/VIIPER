@@ -577,3 +577,10 @@ func pollInputIgnoringCounter(t *testing.T, client *viiperTesting.TestUsbIpClien
 		time.Sleep(1 * time.Millisecond)
 	}
 }
+
+func TestExplicitBatteryOnlyStateIsKept(t *testing.T) {
+	dev, err := New(&device.CreateOptions{DeviceSpecific: `{"external_power":false}`})
+	require.NoError(t, err)
+	assert.False(t, dev.metaState.ExternalPower)
+	assert.Equal(t, DefaultSerial, dev.metaState.SerialNumber)
+}

@@ -45,28 +45,19 @@ func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	}
 	o.DeviceSpecific = string(b)
 
-	return New(o)
+	d, err := New(o)
+	if err != nil {
+		serials.Release(metaState.SerialNumber)
+		return nil, err
+	}
+	// Held for as long as the device is on the bus, not for one stream.
+	reserved := metaState.SerialNumber
+	d.OnRelease(func() { serials.Release(reserved) })
+	return d, nil
 }
 
 func (h *handler) StreamHandler() api.StreamHandlerFunc {
 	return func(conn net.Conn, devPtr *usb.Device, logger *slog.Logger) error {
-		defer func() {
-			if devPtr == nil || *devPtr == nil {
-				return
-			}
-			ns2, ok := (*devPtr).(*NS2Pro)
-			if !ok {
-				slog.Warn("device is not ns2pro on disconnect")
-				return
-			}
-			serial := ns2.serialNumber()
-			if serial == "" {
-				return
-			}
-			serials.Release(serial)
-			slog.Debug("ns2pro disconnected, serial released", "serial", serial)
-		}()
-
 		if devPtr == nil || *devPtr == nil {
 			return fmt.Errorf("nil device")
 		}

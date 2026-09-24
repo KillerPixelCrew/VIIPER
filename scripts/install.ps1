@@ -175,7 +175,8 @@ try {
     if (-not $isUpdate) {
         Write-Host "Configuring system startup..."
     }
-    Start-Process -WindowStyle Hidden  "$installPath" -ArgumentList "install"
+    # Wait: "install" writes the autorun entry, and the restart below must not kill it mid-way.
+    Start-Process -WindowStyle Hidden -Wait "$installPath" -ArgumentList "install"
     
     Write-Host "VIIPER installed successfully!" -ForegroundColor Green
     Write-Host "Binary installed to: $installPath"

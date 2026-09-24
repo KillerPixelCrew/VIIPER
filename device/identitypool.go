@@ -51,3 +51,30 @@ func (p *IdentityPool) Release(id string) {
 	defer p.mu.Unlock()
 	delete(p.inUse, id)
 }
+
+// Releaser is embedded by devices that hold resources, such as reserved
+// identities, for as long as they are on a bus. The bus calls
+// ReleaseResources when it removes the device or closes; the release runs at
+// most once, however often it is called.
+type Releaser struct {
+	mu      sync.Mutex
+	release func()
+}
+
+// OnRelease sets what ReleaseResources frees.
+func (r *Releaser) OnRelease(fn func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.release = fn
+}
+
+// ReleaseResources frees what OnRelease registered, once.
+func (r *Releaser) ReleaseResources() {
+	r.mu.Lock()
+	fn := r.release
+	r.release = nil
+	r.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}

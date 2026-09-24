@@ -164,7 +164,6 @@ func (vb *VirtualBus) GetBusEmptyContext() context.Context {
 // Returns error if not found.
 func (vb *VirtualBus) RemoveDeviceByID(deviceID string) error {
 	vb.mtx.Lock()
-	defer vb.mtx.Unlock()
 	for i, d := range vb.devices {
 		if fmt.Sprintf("%d", d.meta.DevID) == deviceID {
 			if d.cancel != nil {
@@ -172,10 +171,12 @@ func (vb *VirtualBus) RemoveDeviceByID(deviceID string) error {
 			}
 			delete(vb.allocatedDevIDs, d.meta.DevID)
 			vb.devices = append(vb.devices[:i], vb.devices[i+1:]...)
-
+			vb.mtx.Unlock()
+			releaseDevice(d.dev)
 			return nil
 		}
 	}
+	vb.mtx.Unlock()
 	return fmt.Errorf("device with id %s not found on bus %d", deviceID, vb.busID)
 }
 
@@ -185,7 +186,6 @@ func (vb *VirtualBus) RemoveDeviceByID(deviceID string) error {
 // during runtime.
 func (vb *VirtualBus) Remove(dev usb.Device) error {
 	vb.mtx.Lock()
-	defer vb.mtx.Unlock()
 	for i, d := range vb.devices {
 		if d.dev == dev {
 			if d.cancel != nil {
@@ -193,10 +193,21 @@ func (vb *VirtualBus) Remove(dev usb.Device) error {
 			}
 			delete(vb.allocatedDevIDs, d.meta.DevID)
 			vb.devices = append(vb.devices[:i], vb.devices[i+1:]...)
+			vb.mtx.Unlock()
+			releaseDevice(dev)
 			return nil
 		}
 	}
+	vb.mtx.Unlock()
 	return fmt.Errorf("device not found")
+}
+
+// releaseDevice lets a device free what it holds for its lifetime on the bus,
+// such as a reserved serial number. It runs after the bus lock is dropped.
+func releaseDevice(dev usb.Device) {
+	if r, ok := dev.(interface{ ReleaseResources() }); ok {
+		r.ReleaseResources()
+	}
 }
 
 // Close frees the bus number allocated to this VirtualBus, allowing it to be
@@ -211,6 +222,8 @@ func (vb *VirtualBus) Close() error {
 		}
 		vb.devices[i].ctx = nil
 		vb.devices[i].cancel = nil
+		// Nothing a device releases takes the bus lock, so this is safe here.
+		releaseDevice(vb.devices[i].dev)
 	}
 
 	globalMtx.Lock()

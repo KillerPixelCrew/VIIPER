@@ -10,6 +10,7 @@ import (
 	"maps"
 	"math"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +21,8 @@ import (
 )
 
 type DualSense struct {
+	device.Releaser
+
 	inputCh    chan *InputState
 	inputState *InputState
 	metaState  *MetaState
@@ -90,6 +93,9 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
 		}
 		metaState.ShellColor = newMeta.ShellColor
 	}
+	// Direct constructor callers (lib/viiper) get the colour byte in the serial
+	// just as API-created devices do.
+	metaState.SerialNumber = applyShellColor(metaState.SerialNumber, metaState.ShellColor)
 
 	d := &DualSense{
 		descriptor: defaultDescriptor,
@@ -128,6 +134,15 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
 	return d, nil
 }
 
+// applyShellColor writes the first two characters of the shell colour code into
+// the serial's colour byte (characters 4 and 5), as a real controller does.
+func applyShellColor(serial, color string) string {
+	if color == "" || len(serial) < 6 || len(color) < 2 {
+		return serial
+	}
+	return serial[:4] + strings.ToUpper(color[:2]) + serial[6:]
+}
+
 // DeviceType returns the registry name of this variant. Both variants share
 // one Go type, so the API cannot tell them apart by reflection.
 func (d *DualSense) DeviceType() string {
@@ -150,6 +165,10 @@ func (d *DualSense) SetOutputCallback(f func(OutputState)) {
 func (d *DualSense) UpdateInputState(state *InputState) {
 	if state == nil {
 		state = NewInputState()
+	} else {
+		// Snapshot it: the caller may reuse and mutate its state after this returns.
+		snapshot := *state
+		state = &snapshot
 	}
 	d.mtx.Lock()
 	d.inputState = state

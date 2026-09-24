@@ -15,6 +15,8 @@ import (
 )
 
 type NS2Pro struct {
+	device.Releaser
+
 	inputCh        chan struct{}
 	bulkCh         chan struct{}
 	stateMu        sync.Mutex
@@ -40,24 +42,16 @@ type NS2Pro struct {
 func New(o *device.CreateOptions) (*NS2Pro, error) {
 	metaState := defaultMetaState()
 	if o != nil && o.DeviceSpecific != "" {
-		var newMeta MetaState
-		if err := json.Unmarshal([]byte(o.DeviceSpecific), &newMeta); err != nil {
+		// Decode over the defaults, so an omitted field keeps its default and an
+		// explicit false (a battery-only pad) is kept rather than ignored.
+		if err := json.Unmarshal([]byte(o.DeviceSpecific), metaState); err != nil {
 			return nil, fmt.Errorf("invalid device specific JSON: %w", err)
 		}
-		if newMeta.SerialNumber != "" {
-			metaState.SerialNumber = newMeta.SerialNumber
+		if metaState.SerialNumber == "" {
+			metaState.SerialNumber = DefaultSerial
 		}
-		if newMeta.BatteryLevel != 0 {
-			metaState.BatteryLevel = newMeta.BatteryLevel
-		}
-		if newMeta.Charging {
-			metaState.Charging = true
-		}
-		if newMeta.ExternalPower {
-			metaState.ExternalPower = true
-		}
-		if newMeta.BatteryVolts != 0 {
-			metaState.BatteryVolts = newMeta.BatteryVolts
+		if metaState.BatteryVolts == 0 {
+			metaState.BatteryVolts = DefaultBatteryVolts
 		}
 	}
 

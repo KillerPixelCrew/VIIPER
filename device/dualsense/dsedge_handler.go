@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"strings"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/internal/server/api"
@@ -37,12 +36,7 @@ func (h *dsedgehandler) CreateDevice(o *device.CreateOptions) (usb.Device, error
 	if serial == "" {
 		serial = DefaultSerialNumberDSEdge
 	}
-	if metaState.ShellColor != "" && len(serial) >= 6 {
-		code := strings.ToUpper(metaState.ShellColor)
-		if len(code) >= 2 {
-			serial = serial[:4] + code[:2] + serial[6:]
-		}
-	}
+	serial = applyShellColor(serial, metaState.ShellColor)
 	metaState.SerialNumber = serials.Reserve(serial)
 
 	mac := metaState.MACAddress
@@ -57,29 +51,24 @@ func (h *dsedgehandler) CreateDevice(o *device.CreateOptions) (usb.Device, error
 	}
 	o.DeviceSpecific = string(b)
 
-	return new(o, true)
+	d, err := new(o, true)
+	if err != nil {
+		serials.Release(metaState.SerialNumber)
+		macs.Release(metaState.MACAddress)
+		return nil, err
+	}
+	// Identities are held for as long as the device is on the bus, not for
+	// the life of one stream: a client may reconnect to the same device.
+	reservedSerial, reservedMAC := metaState.SerialNumber, metaState.MACAddress
+	d.OnRelease(func() {
+		serials.Release(reservedSerial)
+		macs.Release(reservedMAC)
+	})
+	return d, nil
 }
 
 func (h *dsedgehandler) StreamHandler() api.StreamHandlerFunc {
 	return func(conn net.Conn, devPtr *usb.Device, logger *slog.Logger) error {
-		defer func() {
-			if devPtr == nil || *devPtr == nil {
-				return
-			}
-			dse, ok := (*devPtr).(*DualSense)
-			if !ok {
-				slog.Warn("device is not DualSenseEdge on disconnect")
-				return
-			}
-			dse.mtx.Lock()
-			serial := dse.metaState.SerialNumber
-			mac := dse.metaState.MACAddress
-			dse.mtx.Unlock()
-			serials.Release(serial)
-			macs.Release(mac)
-			slog.Debug("DualSenseEdge disconnected, serial/mac released", "serial", serial, "mac", mac)
-		}()
-
 		if devPtr == nil || *devPtr == nil {
 			return fmt.Errorf("nil device")
 		}
