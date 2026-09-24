@@ -42,7 +42,6 @@ import (
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/device/dualsense"
-	"github.com/Alia5/VIIPER/device/dualsenseedge"
 	"github.com/Alia5/VIIPER/device/dualshock4"
 	"github.com/Alia5/VIIPER/device/ns2pro"
 	"github.com/Alia5/VIIPER/device/steamcontroller"
@@ -188,15 +187,15 @@ func applyAlias(tn string, opts *device.CreateOptions) string {
 		return tn
 	}
 	if alias.profile != "" {
-		opts.DeviceSpecific = map[string]any{"profile": alias.profile}
+		opts.DeviceSpecific = fmt.Sprintf(`{"profile":%q}`, alias.profile)
 	}
-	if alias.vidOverride != nil && opts.IdVendor == nil {
+	if alias.vidOverride != nil && opts.IDVendor == nil {
 		v := *alias.vidOverride
-		opts.IdVendor = &v
+		opts.IDVendor = &v
 	}
-	if alias.pidOverride != nil && opts.IdProduct == nil {
+	if alias.pidOverride != nil && opts.IDProduct == nil {
 		p := *alias.pidOverride
-		opts.IdProduct = &p
+		opts.IDProduct = &p
 	}
 	if alias.deprecationMsg != "" {
 		warnDeprecatedAlias(tn, alias.deprecationMsg)
@@ -481,7 +480,7 @@ func viiper_bus_create(busID C.uint32_t) (rc C.int) {
 		return setError(fmt.Errorf("not initialized"))
 	}
 
-	bus, err := virtualbus.NewWithBusId(uint32(busID))
+	bus, err := virtualbus.NewWithBusID(uint32(busID))
 	if err != nil {
 		return setError(err)
 	}
@@ -568,7 +567,7 @@ func viiper_device_add(busID C.uint32_t, typeName *C.char, outDeviceID *C.uint32
 	var devID uint32
 	for _, m := range metas {
 		if m.Dev == dev {
-			devID = m.Meta.DevId
+			devID = m.Meta.DevID
 			break
 		}
 	}
@@ -623,11 +622,11 @@ func viiper_device_add_ex(busID C.uint32_t, typeName *C.char, vid C.uint16_t, pi
 	var opts device.CreateOptions
 	if vid != 0 {
 		v := uint16(vid)
-		opts.IdVendor = &v
+		opts.IDVendor = &v
 	}
 	if pid != 0 {
 		p := uint16(pid)
-		opts.IdProduct = &p
+		opts.IDProduct = &p
 	}
 	registryName := applyAlias(tn, &opts)
 
@@ -655,7 +654,7 @@ func viiper_device_add_ex(busID C.uint32_t, typeName *C.char, vid C.uint16_t, pi
 	var devID uint32
 	for _, m := range metas {
 		if m.Dev == dev {
-			devID = m.Meta.DevId
+			devID = m.Meta.DevID
 			break
 		}
 	}
@@ -912,18 +911,8 @@ func applyInput(info *deviceInfo, buf []byte) error {
 		}
 		ds4.UpdateInputState(&state)
 
-	case "dualsenseedge":
-		dse, ok := info.dev.(*dualsenseedge.DualSenseEdge)
-		if !ok {
-			return fmt.Errorf("device type mismatch")
-		}
-		var state dualsenseedge.InputState
-		if err := state.UnmarshalBinary(buf); err != nil {
-			return err
-		}
-		dse.UpdateInputState(&state)
-
-	case "dualsense":
+	case "dualsense", "dualsenseedge":
+		// One package serves both: dualsense.NewEdge builds the Edge variant.
 		ds, ok := info.dev.(*dualsense.DualSense)
 		if !ok {
 			return fmt.Errorf("device type mismatch")
@@ -1005,10 +994,10 @@ func applyInput(info *deviceInfo, buf []byte) error {
 		xdev.UpdateInputState(&state)
 
 	case "ns2pro":
-		// Switch 2 Pro Controller: 27-byte wire (Buttons:u32, LX/LY/RX/RY:u16
-		// 12-bit native, Accel/Gyro:i16, batteryLevel:u8, charging:bool,
-		// externalPower:bool). UpdateInputState takes the InputState by value
-		// (not pointer) to match the port's API.
+		// Switch 2 Pro Controller: 24-byte wire (Buttons:u32, LX/LY/RX/RY:u16
+		// 12-bit native, Accel/Gyro:i16). Battery and charging state are
+		// device metadata now, not input. UpdateInputState takes the
+		// InputState by value (not pointer) to match the port's API.
 		ns2, ok := info.dev.(*ns2pro.NS2Pro)
 		if !ok {
 			return fmt.Errorf("device type mismatch")
@@ -1079,20 +1068,7 @@ func viiper_device_set_feedback_callback(busID C.uint32_t, deviceID C.uint32_t, 
 			invokeFeedbackCallback(bid, did, data)
 		})
 
-	case "dualsenseedge":
-		dse, ok := info.dev.(*dualsenseedge.DualSenseEdge)
-		if !ok {
-			return setError(fmt.Errorf("device type mismatch"))
-		}
-		dse.SetOutputCallback(func(output dualsenseedge.OutputState) {
-			data, err := output.MarshalBinary()
-			if err != nil {
-				return
-			}
-			invokeFeedbackCallback(bid, did, data)
-		})
-
-	case "dualsense":
+	case "dualsense", "dualsenseedge":
 		ds, ok := info.dev.(*dualsense.DualSense)
 		if !ok {
 			return setError(fmt.Errorf("device type mismatch"))
