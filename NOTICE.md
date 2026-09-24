@@ -20,23 +20,29 @@ under the **GPL-3.0** in its entirety; the full license text is preserved in
 
 ## Modifications in this fork
 
-Relative to upstream VIIPER, this fork adds/changes (non-exhaustive):
+The `wsgm` branch tracks Alia5/VIIPER `main` by merging it. Relative to
+upstream, it adds or changes (non-exhaustive):
 
-- New device backends ported/adapted: `device/dualsense`, `device/steamdeck`,
-  `device/ns2pro`.
-- Reworked `device/steamcontroller` into the wired Steam Controller V1 (Gordon),
-  with the Steam Deck handheld split into its own `device/steamdeck`.
-- Fixed L2/R2 analog-trigger HID usages in `device/dualsense` and
-  `device/dualshock4` (use Rx/Ry `0x33`/`0x34` instead of duplicating the
-  right-stick `Z`/`Rz` usages) so the devices enumerate correctly as
-  `Windows.Gaming.Input` RawGameControllers.
-- `usb`: slim `Configuration` descriptor shape, MS OS 1.0 probe string, and a
-  `Descriptor.NumInterfaces()` helper used by the ported backends.
-- `clib`: device-type alias system (handheld VID/PID overrides + deprecation
-  warnings) and per-device input-state / output-callback handling.
-- `device/xboxgip` + `cmd/gip_probe`: GIP probe/protocol experimentation
-  (currently blocked upstream of this fork by a missing Microsoft-side auth
-  challenge).
+- `clib`: a C shared library (`libviiper.dll`) with a single embedded server,
+  add and attach as separate calls, per-type input fast paths, raw feedback
+  callbacks that are drained before a device is removed, usbip client plug-out
+  on remove, panic recovery at the cgo boundary, and a device-type alias system
+  (handheld VID/PID overrides and deprecation warnings).
+- `internal/server/usb`: persistent per-endpoint interrupt-IN workers,
+  hardware-paced completions, and per-device NAK-idle endpoints, in place of
+  upstream's per-URB completion goroutines.
+- Windows attach: a cancellable overlapped `plugin_hardware` IOCTL that
+  negotiates the usbip-win2 0.9.7.7, 0.9.7.8 and 0.9.8.0 layouts, and requests
+  the low-latency (WSK event) receive mode on 0.9.8.0.
+- New device backends: `device/steamdeck` (the Steam Deck handheld controller),
+  `device/steamcontroller` (the wired Steam Controller V1), `device/switchpro`,
+  `device/xboxelite2`, and `device/xboxgip` with `cmd/gip_probe` (GIP protocol
+  experimentation, blocked by a missing Microsoft-side auth challenge).
+- `device/xbox360`, `keyboard`, `mouse`, `dualshock4`: input is signalled
+  through a shared input gate and stored by value, so updates do not allocate.
+  The DualShock 4 calibration report declares VIIPER's accel scale as 1g.
+
+`device/dualsense` and `device/ns2pro` are upstream's implementations.
 
 ## How to obtain the corresponding source
 

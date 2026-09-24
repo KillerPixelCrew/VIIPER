@@ -244,7 +244,11 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 - [SDL](https://www.libsdl.org/)  
   For their excellent work on input device handling, reducing reversing efforts to a minimum.
 
-## WSGM endpoint idle policy
+## WSGM downstream branch
+
+The `wsgm` branch tracks Alia5/VIIPER `main` by merging it; `NOTICE.md` lists what it changes.
+
+### Endpoint idle policy
 
 The downstream branch leaves the Steam Deck keyboard and mouse placeholder requests pending without
 recurring keepalive timers. Its controller endpoint keeps continuous reports. See
