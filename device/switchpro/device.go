@@ -16,7 +16,7 @@ import (
 
 // SwitchPro emulates a Nintendo Switch Pro Controller (or Joy-Con) virtual USB device.
 type SwitchPro struct {
-	gate           *device.InputGate
+	gate         *device.InputGate
 	inputState   *InputState
 	stateMu      sync.Mutex
 	outputFunc   func(OutputState)
@@ -43,18 +43,15 @@ type switchProCreateOptions struct {
 
 func New(o *device.CreateOptions) (*SwitchPro, error) {
 	d := &SwitchPro{
-		gate: device.NewInputGate(),
+		gate:       device.NewInputGate(),
 		descriptor: cloneDescriptor(defaultDescriptor),
 		profile:    ProfileProController,
 		inputState: &InputState{},
 	}
 
-	if o != nil && o.DeviceSpecific != nil {
+	if o != nil && o.DeviceSpecific != "" {
 		var args switchProCreateOptions
-		data, err := json.Marshal(o.DeviceSpecific)
-		if err != nil {
-			return nil, fmt.Errorf("invalid JSON payload: %w", err)
-		}
+		data := []byte(o.DeviceSpecific)
 		if err := json.Unmarshal(data, &args); err != nil {
 			return nil, fmt.Errorf("invalid JSON payload: %w", err)
 		}
@@ -68,11 +65,11 @@ func New(o *device.CreateOptions) (*SwitchPro, error) {
 	}
 
 	if o != nil {
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
 	}
 
@@ -181,9 +178,9 @@ func (d *SwitchPro) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 // HandleControl handles EP0 control transfers (HID class requests).
 func (d *SwitchPro) HandleControl(bmRequestType, bRequest uint8, wValue, _ uint16, wLength uint16, data []byte) ([]byte, bool) {
 	const (
-		hidGetReport  = 0x01
-		hidSetReport  = 0x09
-		hidSetIdle    = 0x0A
+		hidGetReport   = 0x01
+		hidSetReport   = 0x09
+		hidSetIdle     = 0x0A
 		hidSetProtocol = 0x0B
 	)
 	const (
@@ -334,7 +331,7 @@ func cloneDescriptor(src usb.Descriptor) usb.Descriptor {
 		if src.Interfaces[i].HID != nil {
 			hid := *src.Interfaces[i].HID
 			hid.Descriptor.Descriptors = append([]usb.HIDSubDescriptor(nil), src.Interfaces[i].HID.Descriptor.Descriptors...)
-			hid.ReportRaw = append([]byte(nil), src.Interfaces[i].HID.ReportRaw...)
+			hid.ReportDescriptorBytes = append([]byte(nil), src.Interfaces[i].HID.ReportDescriptorBytes...)
 			dst.Interfaces[i].HID = &hid
 		}
 		dst.Interfaces[i].Endpoints = append([]usb.EndpointDescriptor(nil), src.Interfaces[i].Endpoints...)

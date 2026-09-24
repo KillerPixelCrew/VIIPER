@@ -18,15 +18,6 @@ func init() {
 type handler struct{ profile string }
 
 func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
-	if o == nil {
-		o = &device.CreateOptions{}
-	}
-	if o.DeviceSpecific == nil {
-		o.DeviceSpecific = map[string]any{}
-	}
-	if _, ok := o.DeviceSpecific["profile"]; !ok {
-		o.DeviceSpecific["profile"] = h.profile
-	}
 	return New(o)
 }
 
@@ -68,4 +59,8 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 			deck.UpdateInputState(&state)
 		}
 	}
+}
+
+func (h *handler) UpdateMetaState(meta string, dev *usb.Device) error {
+	return nil
 }

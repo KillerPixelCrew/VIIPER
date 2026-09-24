@@ -114,16 +114,17 @@ const (
 // for Windows HID parser compatibility.
 //
 // Input report 0x01 layout (17 bytes):
-//   b[0]    = Report ID (0x01)
-//   b[1:3]  = Left Stick X  (uint16 LE, Usage X 0x30, 0-65535, center 32768)
-//   b[3:5]  = Left Stick Y  (uint16 LE, Usage Y 0x31, 0-65535, center 32768)
-//   b[5:7]  = Right Stick X (uint16 LE, Usage Rx 0x33, 0-65535, center 32768)
-//   b[7:9]  = Right Stick Y (uint16 LE, Usage Ry 0x34, 0-65535, center 32768)
-//   b[9:11] = Left Trigger   (uint16 LE, Usage Z 0x32, 0-65535)
-//   b[11:13]= Right Trigger  (uint16 LE, Usage Rz 0x35, 0-65535)
-//   b[13]   = Hat Switch      (4-bit, 0=center/1-8=dirs, +4 pad)
-//   b[14:16]= Buttons 1-12   (12 bits: A,B,X,Y,LB,RB,View,Menu,LS,RS,Guide,unused +4 pad)
-//   b[16]   = Share/Record    (1 bit Consumer 0x0C:0xB2, +7 pad)
+//
+//	b[0]    = Report ID (0x01)
+//	b[1:3]  = Left Stick X  (uint16 LE, Usage X 0x30, 0-65535, center 32768)
+//	b[3:5]  = Left Stick Y  (uint16 LE, Usage Y 0x31, 0-65535, center 32768)
+//	b[5:7]  = Right Stick X (uint16 LE, Usage Rx 0x33, 0-65535, center 32768)
+//	b[7:9]  = Right Stick Y (uint16 LE, Usage Ry 0x34, 0-65535, center 32768)
+//	b[9:11] = Left Trigger   (uint16 LE, Usage Z 0x32, 0-65535)
+//	b[11:13]= Right Trigger  (uint16 LE, Usage Rz 0x35, 0-65535)
+//	b[13]   = Hat Switch      (4-bit, 0=center/1-8=dirs, +4 pad)
+//	b[14:16]= Buttons 1-12   (12 bits: A,B,X,Y,LB,RB,View,Menu,LS,RS,Guide,unused +4 pad)
+//	b[16]   = Share/Record    (1 bit Consumer 0x0C:0xB2, +7 pad)
 //
 // FF output report 0x03: PID page Set Effect Report (8 bytes payload).
 var xboxBLEHIDDescriptor = func() []byte {
@@ -331,7 +332,7 @@ var defaultDescriptor = usb.Descriptor{
 						{Type: usb.ReportDescType},
 					},
 				},
-				ReportRaw: xboxBLEHIDDescriptor,
+				ReportDescriptorBytes: xboxBLEHIDDescriptor,
 			},
 			Endpoints: []usb.EndpointDescriptor{
 				{

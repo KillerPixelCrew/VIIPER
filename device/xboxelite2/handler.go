@@ -165,3 +165,7 @@ func plausibleFrame(frame []byte, frameSize int) bool {
 	}
 	return true
 }
+
+func (h *handler) UpdateMetaState(meta string, dev *usb.Device) error {
+	return nil
+}

@@ -3,6 +3,7 @@ package xboxelite2
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"testing"
 
 	"github.com/Alia5/VIIPER/device"
@@ -151,7 +152,7 @@ func TestNew_ProfileDefaultsAndOverrides(t *testing.T) {
 	}
 
 	one, err := New(&device.CreateOptions{
-		DeviceSpecific: map[string]any{"profile": ProfileXboxOneElite},
+		DeviceSpecific: profileArgs(ProfileXboxOneElite),
 	})
 	if err != nil {
 		t.Fatalf("New(xbox-one-elite) returned error: %v", err)
@@ -161,7 +162,7 @@ func TestNew_ProfileDefaultsAndOverrides(t *testing.T) {
 	}
 
 	gip, err := New(&device.CreateOptions{
-		DeviceSpecific: map[string]any{"profile": ProfileElite2GIP},
+		DeviceSpecific: profileArgs(ProfileElite2GIP),
 	})
 	if err != nil {
 		t.Fatalf("New(elite2-gip) returned error: %v", err)
@@ -174,9 +175,9 @@ func TestNew_ProfileDefaultsAndOverrides(t *testing.T) {
 	}
 
 	inferred, err := New(&device.CreateOptions{
-		IdVendor: ptr(DefaultVID),
+		IDVendor: ptr(DefaultVID),
 		// HHD-matching Elite identity.
-		IdProduct: ptr(uint16(0x02E3)),
+		IDProduct: ptr(uint16(0x02E3)),
 	})
 	if err != nil {
 		t.Fatalf("New(vid/pid infer) returned error: %v", err)
@@ -186,21 +187,21 @@ func TestNew_ProfileDefaultsAndOverrides(t *testing.T) {
 	}
 
 	series, err := New(&device.CreateOptions{
-		DeviceSpecific: map[string]any{"profile": ProfileXboxSeries},
-		IdProduct:      ptr(uint16(0xCAFE)),
+		DeviceSpecific: profileArgs(ProfileXboxSeries),
+		IDProduct:      ptr(uint16(0xCAFE)),
 	})
 	if err != nil {
 		t.Fatalf("New(xbox-series) returned error: %v", err)
 	}
 	if got := series.descriptor.Device.IDProduct; got != 0xCAFE {
-		t.Fatalf("IdProduct override mismatch: got 0x%04X want 0xCAFE", got)
+		t.Fatalf("IDProduct override mismatch: got 0x%04X want 0xCAFE", got)
 	}
 	if got := series.GetDeviceSpecificArgs()["profile"]; got != ProfileXboxSeries {
 		t.Fatalf("profile export mismatch: got %v want %s", got, ProfileXboxSeries)
 	}
 
 	if _, err := New(&device.CreateOptions{
-		DeviceSpecific: map[string]any{"profile": "not-a-profile"},
+		DeviceSpecific: profileArgs("not-a-profile"),
 	}); err == nil {
 		t.Fatal("expected unsupported profile error, got nil")
 	}
@@ -215,30 +216,30 @@ func TestProfileDescriptorVariants(t *testing.T) {
 		t.Fatalf("default elite product string mismatch: got %q want %q", got, "Xbox Wireless Controller")
 	}
 	one, err := New(&device.CreateOptions{
-		DeviceSpecific: map[string]any{"profile": ProfileXboxOneElite},
+		DeviceSpecific: profileArgs(ProfileXboxOneElite),
 	})
 	if err != nil {
 		t.Fatalf("New(xbox-one-elite) returned error: %v", err)
 	}
 	series, err := New(&device.CreateOptions{
-		DeviceSpecific: map[string]any{"profile": ProfileXboxSeries},
+		DeviceSpecific: profileArgs(ProfileXboxSeries),
 	})
 	if err != nil {
 		t.Fatalf("New(xbox-series) returned error: %v", err)
 	}
 
-	if !bytes.Equal(elite.descriptor.Interfaces[0].HID.ReportRaw, one.descriptor.Interfaces[0].HID.ReportRaw) {
+	if !bytes.Equal(elite.descriptor.Interfaces[0].HID.ReportDescriptorBytes, one.descriptor.Interfaces[0].HID.ReportDescriptorBytes) {
 		t.Fatal("elite2 should match xbox-one-elite descriptor")
 	}
 	// All Xbox BLE profiles now share the same real Xbox BLE descriptor (15 buttons + CC Record).
-	if !bytes.Equal(one.descriptor.Interfaces[0].HID.ReportRaw, series.descriptor.Interfaces[0].HID.ReportRaw) {
+	if !bytes.Equal(one.descriptor.Interfaces[0].HID.ReportDescriptorBytes, series.descriptor.Interfaces[0].HID.ReportDescriptorBytes) {
 		t.Fatal("xbox-one-elite and xbox-series should share the same Xbox BLE descriptor")
 	}
 }
 
 func TestBuildUSBInputReport_ProfileButtonLayouts(t *testing.T) {
 	series, err := New(&device.CreateOptions{
-		DeviceSpecific: map[string]any{"profile": ProfileXboxSeries},
+		DeviceSpecific: profileArgs(ProfileXboxSeries),
 	})
 	if err != nil {
 		t.Fatalf("New(xbox-series) returned error: %v", err)
@@ -253,7 +254,7 @@ func TestBuildUSBInputReport_ProfileButtonLayouts(t *testing.T) {
 	}
 
 	one, err := New(&device.CreateOptions{
-		DeviceSpecific: map[string]any{"profile": ProfileXboxOneElite},
+		DeviceSpecific: profileArgs(ProfileXboxOneElite),
 	})
 	if err != nil {
 		t.Fatalf("New(xbox-one-elite) returned error: %v", err)
@@ -407,4 +408,9 @@ func buttonBits(report []byte) uint32 {
 
 func ptr[T any](v T) *T {
 	return &v
+}
+
+// profileArgs builds the JSON DeviceSpecific payload that selects a profile.
+func profileArgs(profile string) string {
+	return fmt.Sprintf(`{"profile":%q}`, profile)
 }

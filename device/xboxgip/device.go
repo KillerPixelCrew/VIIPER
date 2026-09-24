@@ -117,19 +117,16 @@ func New(o *device.CreateOptions) (*XboxGIP, error) {
 	}
 
 	if o != nil {
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
-		if o.DeviceSpecific != nil {
-			data, err := json.Marshal(o.DeviceSpecific)
-			if err != nil {
-				return nil, fmt.Errorf("invalid JSON payload: %w", err)
-			}
+		if o.DeviceSpecific != "" {
+			data := []byte(o.DeviceSpecific)
 			var args xboxGIPCreateOptions
-			if err = json.Unmarshal(data, &args); err != nil {
+			if err := json.Unmarshal(data, &args); err != nil {
 				return nil, fmt.Errorf("invalid JSON payload: %w", err)
 			}
 		}
