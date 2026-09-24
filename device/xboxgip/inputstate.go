@@ -17,7 +17,7 @@ import (
 //	              suppresses to avoid double-fire with re-mapped buttons).
 //	Reserved[2..5] = unused (zero).
 //
-// viiper:wire xboxgip c2s buttons:u32 lt:u8 rt:u8 lx:i16 ly:i16 rx:i16 ry:i16 paddles:u8 paddleMode:u8 _:u8 _:u8 _:u8 _:u8
+// viiper:wire xboxgip c2s buttons:u32 lt:u8 rt:u8 lx:i16 ly:i16 rx:i16 ry:i16 paddles:u8 paddleMode:u8 reserved:u8*4
 type InputState struct {
 	Buttons  uint32
 	LT, RT   uint8
