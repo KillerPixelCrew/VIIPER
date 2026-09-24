@@ -20,8 +20,8 @@ export * as Xbox360 from './devices/Xbox360';
 `
 
 const deviceIndexTemplate = `{{writeFileHeaderTS}}
-export * from './{{.PascalName}}Input';
-{{if .HasOutput}}export * from './{{.PascalName}}Output';
+{{if .HasInput}}export * from './{{.PascalName}}Input';
+{{end}}{{if .HasOutput}}export * from './{{.PascalName}}Output';
 {{end}}export * from './{{.PascalName}}Constants';
 {{if .HasMeta}}export * from './{{.PascalName}}Meta';
 {{end}}
@@ -48,6 +48,12 @@ func generateDeviceIndex(logger *slog.Logger, deviceDir, deviceName string) erro
 
 	pascalName := common.ToPascalCase(deviceName)
 
+	// A device without a c2s wire tag has no generated Input file.
+	hasInput := false
+	if _, err := os.Stat(filepath.Join(deviceDir, pascalName+"Input.ts")); err == nil {
+		hasInput = true
+	}
+
 	hasOutput := false
 	outputPath := filepath.Join(deviceDir, pascalName+"Output.ts")
 	if _, err := os.Stat(outputPath); err == nil {
@@ -72,10 +78,12 @@ func generateDeviceIndex(logger *slog.Logger, deviceDir, deviceName string) erro
 
 	data := struct {
 		PascalName string
+		HasInput   bool
 		HasOutput  bool
 		HasMeta    bool
 	}{
 		PascalName: pascalName,
+		HasInput:   hasInput,
 		HasOutput:  hasOutput,
 		HasMeta:    hasMeta,
 	}
