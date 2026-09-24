@@ -83,7 +83,7 @@ func generateTypes(logger *slog.Logger, srcDir string, md *meta.Metadata) error 
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	data := struct {
 		Header string
@@ -110,9 +110,8 @@ func fieldTypeToRust(field interface{}) string {
 	var rustType string
 
 	if typeKind == "map" || strings.HasPrefix(typeStr, "map[") {
-		keyType, valueType, ok := parseGoMapType(typeStr)
+		valueType, ok := parseGoMapType(typeStr)
 		if ok {
-			_ = keyType
 			rustType = fmt.Sprintf("std::collections::HashMap<String, %s>", goTypeToRust(valueType))
 		} else {
 			rustType = "std::collections::HashMap<String, serde_json::Value>"

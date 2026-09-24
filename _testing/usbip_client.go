@@ -61,7 +61,7 @@ func (c *TestUsbIpClient) ListDevices() ([]Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
+	defer conn.Close() //nolint:errcheck
 
 	if err := (&usbip.MgmtHeader{Version: usbip.Version, Command: usbip.OpReqDevlist}).Write(conn); err != nil {
 		return nil, err
@@ -322,25 +322,64 @@ func (c *TestUsbIpClient) ReadInputReportWithTimeout(conn net.Conn, timeout time
 }
 
 func (c *TestUsbIpClient) PollInputReport(conn net.Conn, want []byte, timeout time.Duration) ([]byte, error) {
+	wantAllZero := true
+	for _, b := range want {
+		if b != 0 {
+			wantAllZero = false
+			break
+		}
+	}
+	if wantAllZero {
+		deadline := time.Now().Add(timeout)
+		var last []byte
+		for {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return last, nil
+			}
+			got, err := c.ReadInputReportWithTimeout(conn, remaining)
+			if err != nil {
+				return nil, err
+			}
+			last = got
+			if len(got) == len(want) && bytes.Equal(got, want) {
+				return got, nil
+			}
+			if time.Now().After(deadline) {
+				return last, nil
+			}
+			time.Sleep(1 * time.Millisecond)
+		}
+	}
+
 	deadline := time.Now().Add(timeout)
 	var last []byte
 	for {
-		got, err := c.ReadInputReport(conn)
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return last, nil
+		}
+		got, err := c.ReadInputReportWithTimeout(conn, remaining)
 		if err != nil {
 			return nil, err
 		}
 		last = got
-		if len(got) == len(want) {
-			eq := true
-			for i := range want {
-				if want[i] != got[i] {
-					eq = false
-					break
-				}
+		if len(got) == len(want) && bytes.Equal(got, want) {
+			return got, nil
+		}
+		allZero := true
+		for _, b := range got {
+			if b != 0 {
+				allZero = false
+				break
 			}
-			if eq {
-				return got, nil
+		}
+		if !allZero {
+			if time.Now().After(deadline) {
+				return last, nil
 			}
+			time.Sleep(1 * time.Millisecond)
+			continue
 		}
 		if time.Now().After(deadline) {
 			return last, nil

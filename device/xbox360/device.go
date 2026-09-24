@@ -33,23 +33,19 @@ type Xbox360CreateOptions struct {
 // New returns a new Xbox360 device.
 func New(o *device.CreateOptions) (*Xbox360, error) {
 	d := &Xbox360{
-		gate: device.NewInputGate(),
+		gate:       device.NewInputGate(),
 		descriptor: MakeDescriptor(),
 	}
 	if o != nil {
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
-		if o.DeviceSpecific != nil {
-			data, err := json.Marshal(o.DeviceSpecific)
+		if o.DeviceSpecific != "" {
 			var args Xbox360CreateOptions
-			if err != nil {
-				return nil, fmt.Errorf("invalid JSON payload: %w", err)
-			}
-			err = json.Unmarshal(data, &args)
+			err := json.Unmarshal([]byte(o.DeviceSpecific), &args)
 			if err != nil {
 				return nil, fmt.Errorf("invalid JSON payload: %w", err)
 			}
@@ -58,6 +54,7 @@ func New(o *device.CreateOptions) (*Xbox360, error) {
 			}
 		}
 	}
+	d.inputState = *NewInputState()
 	return d, nil
 }
 

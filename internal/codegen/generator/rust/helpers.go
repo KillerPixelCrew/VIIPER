@@ -54,20 +54,19 @@ func goTypeToRust(goType string) string {
 	return rustType
 }
 
-func parseGoMapType(typeStr string) (keyType string, valueType string, ok bool) {
+func parseGoMapType(typeStr string) (string, bool) {
 	if !strings.HasPrefix(typeStr, "map[") {
-		return "", "", false
+		return "", false
 	}
 	closeIdx := strings.Index(typeStr, "]")
 	if closeIdx < 0 {
-		return "", "", false
+		return "", false
 	}
-	keyType = typeStr[len("map["):closeIdx]
-	valueType = typeStr[closeIdx+1:]
-	if keyType == "" || valueType == "" {
-		return "", "", false
+	valueType := typeStr[closeIdx+1:]
+	if valueType == "" {
+		return "", false
 	}
-	return keyType, valueType, true
+	return valueType, true
 }
 
 func wireTypeToRust(wireType string) string {
@@ -97,18 +96,6 @@ func wireTypeToRust(wireType string) string {
 	default:
 		return "u8"
 	}
-}
-
-func isWireArray(spec string) bool {
-	return strings.Contains(spec, "*")
-}
-
-func extractArrayCount(spec string) string {
-	parts := strings.Split(spec, "*")
-	if len(parts) == 2 {
-		return parts[1]
-	}
-	return ""
 }
 
 func writeFileHeaderRust() string {

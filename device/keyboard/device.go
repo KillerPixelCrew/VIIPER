@@ -14,7 +14,7 @@ import (
 
 // Keyboard implements the Device interface for a full HID keyboard with LED support.
 type Keyboard struct {
-	gate       *device.InputGate
+	gate        *device.InputGate
 	tick        uint64
 	inputState  *InputState
 	stateMu     sync.Mutex
@@ -26,15 +26,15 @@ type Keyboard struct {
 // New returns a new Keyboard device.
 func New(o *device.CreateOptions) (*Keyboard, error) {
 	d := &Keyboard{
-		gate: device.NewInputGate(),
+		gate:       device.NewInputGate(),
 		descriptor: defaultDescriptor,
 	}
 	if o != nil {
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
 	}
 	return d, nil
@@ -109,7 +109,7 @@ func (k *Keyboard) HandleTransfer(ctx context.Context, ep uint32, dir uint32, ou
 }
 
 // HID Report Descriptor for a full keyboard with 256-bit key bitmap and LED output.
-var reportDescriptor = hid.Report{
+var reportDescriptor = hid.ReportDescriptor{
 	Items: []hid.Item{
 		hid.UsagePage{Page: hid.UsagePageGenericDesktop},
 		hid.Usage{Usage: hid.UsageKeyboard},
@@ -194,7 +194,7 @@ var defaultDescriptor = usb.Descriptor{
 						{Type: usb.ReportDescType}, // Length auto-filled from Report
 					},
 				},
-				Report: reportDescriptor,
+				ReportDescriptor: reportDescriptor,
 			},
 			Endpoints: []usb.EndpointDescriptor{
 				{
@@ -224,6 +224,6 @@ func (k *Keyboard) GetDescriptor() *usb.Descriptor {
 	return &k.descriptor
 }
 
-func (x *Keyboard) GetDeviceSpecificArgs() map[string]any {
+func (k *Keyboard) GetDeviceSpecificArgs() map[string]any {
 	return map[string]any{}
 }

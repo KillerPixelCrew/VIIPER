@@ -7,7 +7,9 @@ import "context"
 type Device interface {
 	// HandleTransfer processes a non-EP0 transfer (interrupt/bulk).
 	// ep is the endpoint number (without direction). dir is usbip.DirIn or usbip.DirOut.
-	// For IN transfers, return the payload to send; for OUT, consume 'out' and return nil.
+	// For IN transfers the implementation should block until data is available or ctx is
+	// cancelled, then return the payload; returning nil means no data for this poll. For OUT
+	// transfers, consume 'out' and return nil.
 	HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte
 	GetDescriptor() *Descriptor
 	GetDeviceSpecificArgs() map[string]any

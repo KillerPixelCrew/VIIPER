@@ -23,6 +23,8 @@ const deviceIndexTemplate = `{{writeFileHeaderTS}}
 export * from './{{.PascalName}}Input';
 {{if .HasOutput}}export * from './{{.PascalName}}Output';
 {{end}}export * from './{{.PascalName}}Constants';
+{{if .HasMeta}}export * from './{{.PascalName}}Meta';
+{{end}}
 `
 
 func generateIndex(logger *slog.Logger, srcDir string) error {
@@ -31,7 +33,7 @@ func generateIndex(logger *slog.Logger, srcDir string) error {
 	if err != nil {
 		return fmt.Errorf("write index.ts: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	tmpl := template.Must(template.New("index").Funcs(template.FuncMap{
 		"writeFileHeaderTS": writeFileHeaderTS,
 	}).Parse(indexTemplate))
@@ -52,11 +54,17 @@ func generateDeviceIndex(logger *slog.Logger, deviceDir, deviceName string) erro
 		hasOutput = true
 	}
 
+	hasMeta := false
+	metaPath := filepath.Join(deviceDir, pascalName+"Meta.ts")
+	if _, err := os.Stat(metaPath); err == nil {
+		hasMeta = true
+	}
+
 	f, err := os.Create(filepath.Join(deviceDir, "index.ts"))
 	if err != nil {
 		return fmt.Errorf("write device index.ts: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	tmpl := template.Must(template.New("deviceIndex").Funcs(template.FuncMap{
 		"writeFileHeaderTS": writeFileHeaderTS,
@@ -65,9 +73,11 @@ func generateDeviceIndex(logger *slog.Logger, deviceDir, deviceName string) erro
 	data := struct {
 		PascalName string
 		HasOutput  bool
+		HasMeta    bool
 	}{
 		PascalName: pascalName,
 		HasOutput:  hasOutput,
+		HasMeta:    hasMeta,
 	}
 
 	if err := tmpl.Execute(f, data); err != nil {

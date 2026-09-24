@@ -25,15 +25,15 @@ type Mouse struct {
 // New returns a new Mouse device.
 func New(o *device.CreateOptions) (*Mouse, error) {
 	d := &Mouse{
-		gate: device.NewInputGate(),
+		gate:       device.NewInputGate(),
 		descriptor: defaultDescriptor,
 	}
 	if o != nil {
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
 	}
 	return d, nil
@@ -80,7 +80,7 @@ func (m *Mouse) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out [
 
 // HID Report Descriptor for a 5-button mouse with vertical and horizontal wheels.
 // Boot protocol compatible.
-var reportDescriptor = hid.Report{
+var reportDescriptor = hid.ReportDescriptor{
 	Items: []hid.Item{
 		hid.UsagePage{Page: hid.UsagePageGenericDesktop},
 		hid.Usage{Usage: hid.UsageMouse},
@@ -163,7 +163,7 @@ var defaultDescriptor = usb.Descriptor{
 						{Type: usb.ReportDescType},
 					},
 				},
-				Report: reportDescriptor,
+				ReportDescriptor: reportDescriptor,
 			},
 			Endpoints: []usb.EndpointDescriptor{
 				{
@@ -187,6 +187,6 @@ func (m *Mouse) GetDescriptor() *usb.Descriptor {
 	return &m.descriptor
 }
 
-func (x *Mouse) GetDeviceSpecificArgs() map[string]any {
+func (m *Mouse) GetDeviceSpecificArgs() map[string]any {
 	return map[string]any{}
 }

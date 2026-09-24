@@ -18,15 +18,18 @@ const deviceHeaderTemplate = `{{.Header}}
 #pragma once
 
 #include "../error.hpp"
+#include "../detail/json.hpp"
 #include <cstdint>
 #include <vector>
 {{- if or .HasMaps .HasFixedWireArrays}}
 #include <array>
 {{- end}}
-{{- if .HasMaps}}
+{{- if or .HasMaps .HasDeviceSpecific}}
 #include <string_view>
 #include <algorithm>
 #include <optional>
+{{- end}}
+{{- if .HasMaps}}
 #include <unordered_map>
 #include <unordered_set>
 {{- end}}
@@ -43,6 +46,74 @@ constexpr std::size_t OUTPUT_SIZE = {{.OutputSize}};
 {{- range .Constants}}
 constexpr std::uint64_t {{.Name}} = {{.Value}};
 {{- end}}
+
+{{if .HasDeviceSpecific}}
+// ============================================================================
+// Device-specific typed helpers
+// ============================================================================
+{{range .DeviceStructs}}
+struct {{.Name}} {
+{{- range .Fields}}
+	{{fieldcpptype .}} {{.Name}}{};
+{{- end}}
+
+	static {{.Name}} from_map(const json_type& j) {
+		{{.Name}} result;
+{{- range .Fields}}
+{{- if and .Optional (eq .TypeKind "map")}}
+		if (j.contains("{{.JSONName}}") && !j["{{.JSONName}}"].is_null()) {
+			result.{{.Name}} = j["{{.JSONName}}"];
+		} else {
+			result.{{.Name}} = std::nullopt;
+		}
+{{- else if .Optional}}
+		result.{{.Name}} = detail::get_optional_field<{{fieldcpptype . | unwrapOptional}}>(j, "{{.JSONName}}");
+{{- else if eq .TypeKind "slice"}}
+		result.{{.Name}} = detail::get_array<{{cpptype .Type | sliceElementType}}>(j, "{{.JSONName}}");
+{{- else if eq .TypeKind "map"}}
+		if (j.contains("{{.JSONName}}")) {
+			result.{{.Name}} = j["{{.JSONName}}"];
+		}
+{{- else if isCustomType .Type}}
+		if (j.contains("{{.JSONName}}")) {
+			result.{{.Name}} = {{cpptype .Type}}::from_json(j["{{.JSONName}}"]);
+		}
+{{- else}}
+		result.{{.Name}} = j.value("{{.JSONName}}", {{cpptype .Type}}{});
+{{- end}}
+{{- end}}
+		return result;
+	}
+
+	[[nodiscard]] json_type to_map() const {
+		json_type j;
+{{- range .Fields}}
+{{- if .Optional}}
+	if ({{.Name}}.has_value()) {
+	    j["{{.JSONName}}"] = {{.Name}}.value();
+		}
+{{- else if eq .TypeKind "slice"}}
+		{
+			json_type arr = json_type::array();
+	    for (const auto& item : {{.Name}}) {
+				{{- if isCustomType .Type}}
+				arr.push_back(item.to_json());
+				{{- else}}
+				arr.push_back(item);
+				{{- end}}
+			}
+			j["{{.JSONName}}"] = std::move(arr);
+		}
+{{- else}}
+	j["{{.JSONName}}"] = {{.Name}};
+{{- end}}
+{{- end}}
+		return j;
+	}
+};
+
+{{end}}
+{{end}}
 {{range .Maps}}
 {{- if and (isByteKeyMap .KeyType) (hasCharLiteralKeys .Entries)}}
 {{- if eq .ValueType "bool"}}
@@ -173,14 +244,55 @@ struct Input {
 
 struct Output {
 {{- range $fields}}
+{{- if isArrayType .Type}}
+{{- if isFixedArrayType .Type}}
+	std::array<{{cpptype (baseType .Type)}}, {{fixedArrayLen .Type}}> {{camelcase .Name}}{};
+{{- else}}
+	std::vector<{{cpptype (baseType .Type)}}> {{camelcase .Name}};
+{{- end}}
+{{- else}}
     {{cpptype .Type}} {{camelcase .Name}} = 0;
+{{- end}}
 {{- end}}
 
     static Result<Output> from_bytes(const std::uint8_t* data, std::size_t len) {
         Output result;
         std::size_t offset = 0;
 {{- range $fields}}
-{{- if eq .Type "u8"}}
+{{- if isArrayType .Type}}
+{{- if isFixedArrayType .Type}}
+{{- $bt := baseType .Type}}
+	for (std::size_t i = 0; i < static_cast<std::size_t>({{fixedArrayLen .Type}}); i++) {
+{{- if eq $bt "u8"}}
+	    if (offset >= len) return Error("buffer too short");
+	    result.{{camelcase .Name}}[i] = data[offset++];
+{{- else if eq $bt "i8"}}
+	    if (offset >= len) return Error("buffer too short");
+	    result.{{camelcase .Name}}[i] = static_cast<std::int8_t>(data[offset++]);
+{{- else if eq $bt "u16"}}
+	    if (offset + 2 > len) return Error("buffer too short");
+	    result.{{camelcase .Name}}[i] = data[offset] | (static_cast<std::uint16_t>(data[offset + 1]) << 8);
+	    offset += 2;
+{{- else if eq $bt "i16"}}
+	    if (offset + 2 > len) return Error("buffer too short");
+	    result.{{camelcase .Name}}[i] = static_cast<std::int16_t>(data[offset] | (static_cast<std::uint16_t>(data[offset + 1]) << 8));
+	    offset += 2;
+{{- else if eq $bt "u32"}}
+	    if (offset + 4 > len) return Error("buffer too short");
+	    result.{{camelcase .Name}}[i] = data[offset] | (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
+					   (static_cast<std::uint32_t>(data[offset + 2]) << 16) | (static_cast<std::uint32_t>(data[offset + 3]) << 24);
+	    offset += 4;
+{{- else if eq $bt "i32"}}
+	    if (offset + 4 > len) return Error("buffer too short");
+	    result.{{camelcase .Name}}[i] = static_cast<std::int32_t>(data[offset] | (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
+					   (static_cast<std::uint32_t>(data[offset + 2]) << 16) | (static_cast<std::uint32_t>(data[offset + 3]) << 24));
+	    offset += 4;
+{{- end}}
+	}
+{{- else}}
+	return Error("variable-length output arrays are not supported");
+{{- end}}
+{{- else if eq .Type "u8"}}
         if (offset >= len) return Error("buffer too short");
         result.{{camelcase .Name}} = data[offset++];
 {{- else if eq .Type "i8"}}
@@ -239,7 +351,7 @@ func generateDeviceHeader(logger *slog.Logger, devicesDir, deviceName string, md
 	if err != nil {
 		return fmt.Errorf("create device header: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	hasMaps := false
 	for _, m := range devicePkg.Maps {
@@ -270,26 +382,50 @@ func generateDeviceHeader(logger *slog.Logger, devicesDir, deviceName string, md
 				}
 			}
 		}
+		if !hasFixedWireArrays {
+			if s2cTag := md.WireTags.GetTag(deviceName, "s2c"); s2cTag != nil {
+				for _, f := range s2cTag.Fields {
+					if idx := strings.Index(f.Type, "*"); idx >= 0 {
+						if _, err := strconv.Atoi(f.Type[idx+1:]); err == nil {
+							hasFixedWireArrays = true
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	constants := make([]scanner.ConstantInfo, 0, len(devicePkg.Constants))
+	for _, c := range devicePkg.Constants {
+		if !common.IsIntegerConst(c.Value, c.Type) {
+			continue
+		}
+		constants = append(constants, c)
 	}
 
 	data := struct {
 		Header             string
 		DeviceName         string
 		Constants          []scanner.ConstantInfo
+		DeviceStructs      []scanner.DTOSchema
 		Maps               []scanner.MapInfo
 		HasInput           bool
 		HasOutput          bool
 		HasMaps            bool
+		HasDeviceSpecific  bool
 		HasFixedWireArrays bool
 		OutputSize         int
 	}{
 		Header:             writeFileHeader(),
 		DeviceName:         deviceName,
-		Constants:          devicePkg.Constants,
+		Constants:          constants,
+		DeviceStructs:      md.DeviceStructs[deviceName],
 		Maps:               devicePkg.Maps,
 		HasInput:           hasInput,
 		HasOutput:          hasOutput,
 		HasMaps:            hasMaps,
+		HasDeviceSpecific:  len(md.DeviceStructs[deviceName]) > 0,
 		HasFixedWireArrays: hasFixedWireArrays,
 		OutputSize:         outputSize,
 	}

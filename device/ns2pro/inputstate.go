@@ -5,7 +5,8 @@ import (
 	"io"
 )
 
-// viiper:wire ns2pro c2s buttons:u32 lx:u16 ly:u16 rx:u16 ry:u16 accelX:i16 accelY:i16 accelZ:i16 gyroX:i16 gyroY:i16 gyroZ:i16 batteryLevel:u8 charging:bool externalPower:bool
+// nolint
+// viiper:wire ns2pro c2s buttons:u32 lx:u16 ly:u16 rx:u16 ry:u16 accelX:i16 accelY:i16 accelZ:i16 gyroX:i16 gyroY:i16 gyroZ:i16
 type InputState struct {
 	Buttons uint32
 
@@ -14,20 +15,34 @@ type InputState struct {
 
 	AccelX, AccelY, AccelZ int16
 	GyroX, GyroY, GyroZ    int16
-
-	BatteryLevel  uint8
-	Charging      bool
-	ExternalPower bool
 }
 
-func defaultInputState() *InputState {
+// NewInputState returns an NS2 Pro input state in its neutral/resting state.
+func NewInputState() *InputState {
 	return &InputState{
-		LX:            StickCenter,
-		LY:            StickCenter,
-		RX:            StickCenter,
-		RY:            StickCenter,
+		LX: StickCenter,
+		LY: StickCenter,
+		RX: StickCenter,
+		RY: StickCenter,
+	}
+}
+
+func defaultInputState() *InputState { return NewInputState() }
+
+type MetaState struct {
+	SerialNumber  string `json:"serial_number"`
+	BatteryLevel  uint8  `json:"battery_level"`
+	Charging      bool   `json:"charging"`
+	ExternalPower bool   `json:"external_power"`
+	BatteryVolts  uint16 `json:"battery_volts"`
+}
+
+func defaultMetaState() *MetaState {
+	return &MetaState{
+		SerialNumber:  DefaultSerial,
 		BatteryLevel:  BatteryMax,
 		ExternalPower: true,
+		BatteryVolts:  DefaultBatteryVolts,
 	}
 }
 
@@ -44,13 +59,6 @@ func (s *InputState) MarshalBinary() ([]byte, error) {
 	binary.LittleEndian.PutUint16(b[18:20], uint16(s.GyroX))
 	binary.LittleEndian.PutUint16(b[20:22], uint16(s.GyroY))
 	binary.LittleEndian.PutUint16(b[22:24], uint16(s.GyroZ))
-	b[24] = s.BatteryLevel
-	if s.Charging {
-		b[25] = 1
-	}
-	if s.ExternalPower {
-		b[26] = 1
-	}
 	return b, nil
 }
 
@@ -69,22 +77,24 @@ func (s *InputState) UnmarshalBinary(data []byte) error {
 	s.GyroX = int16(binary.LittleEndian.Uint16(data[18:20]))
 	s.GyroY = int16(binary.LittleEndian.Uint16(data[20:22]))
 	s.GyroZ = int16(binary.LittleEndian.Uint16(data[22:24]))
-	s.BatteryLevel = data[24]
-	s.Charging = data[25] != 0
-	s.ExternalPower = data[26] != 0
 	return nil
 }
 
-// viiper:wire ns2pro s2c leftRumble:u8*16 rightRumble:u8*16
+// nolint
+// viiper:wire ns2pro s2c leftRumble:u8*16 rightRumble:u8*16 flags:u8 playerLedMask:u8
 type OutputState struct {
-	LeftRumble  [16]byte
-	RightRumble [16]byte
+	LeftRumble    [16]byte
+	RightRumble   [16]byte
+	Flags         uint8
+	PlayerLedMask uint8
 }
 
 func (o *OutputState) MarshalBinary() ([]byte, error) {
 	b := make([]byte, OutputWireSize)
 	copy(b[0:16], o.LeftRumble[:])
 	copy(b[16:32], o.RightRumble[:])
+	b[32] = o.Flags
+	b[33] = o.PlayerLedMask
 	return b, nil
 }
 
@@ -94,10 +104,12 @@ func (o *OutputState) UnmarshalBinary(data []byte) error {
 	}
 	copy(o.LeftRumble[:], data[0:16])
 	copy(o.RightRumble[:], data[16:32])
+	o.Flags = data[32]
+	o.PlayerLedMask = data[33]
 	return nil
 }
 
-func (s InputState) buildCommonReport(counter, motionTimestamp uint32, features uint8, batteryVolts uint16) []byte {
+func (s InputState) buildCommonReport(counter, motionTimestamp uint32, features uint8, meta MetaState) []byte {
 	b := make([]byte, InputReportSize)
 	b[0] = ReportIDCommon
 	binary.LittleEndian.PutUint32(b[1:5], counter)
@@ -107,8 +119,8 @@ func (s InputState) buildCommonReport(counter, motionTimestamp uint32, features 
 	packStick12(b[11:14], s.LX, s.LY)
 	packStick12(b[14:17], s.RX, s.RY)
 
-	binary.LittleEndian.PutUint16(b[0x20:0x22], batteryVolts)
-	b[0x22] = chargingState(s)
+	binary.LittleEndian.PutUint16(b[0x20:0x22], meta.BatteryVolts)
+	b[0x22] = chargingState(meta)
 	b[0x2A] = 0x01
 
 	if features&FeatureIMU != 0 {
@@ -124,11 +136,11 @@ func (s InputState) buildCommonReport(counter, motionTimestamp uint32, features 
 	return b
 }
 
-func (s InputState) buildProReport(counter uint8, features uint8) []byte {
+func (s InputState) buildProReport(counter uint8, features uint8, meta MetaState) []byte {
 	b := make([]byte, InputReportSize)
 	b[0] = ReportIDPro
 	b[1] = counter
-	b[2] = powerInfo(s)
+	b[2] = powerInfo(meta)
 
 	buttons := s.proButtonBytes()
 	copy(b[3:6], buttons[:])
@@ -148,141 +160,77 @@ func (s InputState) buildProReport(counter uint8, features uint8) []byte {
 
 func (s InputState) commonButtonBytes() [4]byte {
 	var out [4]byte
-	if s.Buttons&ButtonY != 0 {
-		out[0] |= 0x01
-	}
-	if s.Buttons&ButtonX != 0 {
-		out[0] |= 0x02
-	}
-	if s.Buttons&ButtonB != 0 {
-		out[0] |= 0x04
-	}
-	if s.Buttons&ButtonA != 0 {
-		out[0] |= 0x08
-	}
-	if s.Buttons&ButtonR != 0 {
-		out[0] |= 0x40
-	}
-	if s.Buttons&ButtonZR != 0 {
-		out[0] |= 0x80
-	}
-	if s.Buttons&ButtonMinus != 0 {
-		out[1] |= 0x01
-	}
-	if s.Buttons&ButtonPlus != 0 {
-		out[1] |= 0x02
-	}
-	if s.Buttons&ButtonRightStick != 0 {
-		out[1] |= 0x04
-	}
-	if s.Buttons&ButtonLeftStick != 0 {
-		out[1] |= 0x08
-	}
-	if s.Buttons&ButtonHome != 0 {
-		out[1] |= 0x10
-	}
-	if s.Buttons&ButtonCapture != 0 {
-		out[1] |= 0x20
-	}
-	if s.Buttons&ButtonC != 0 {
-		out[1] |= 0x40
-	}
-	if s.Buttons&ButtonDown != 0 {
-		out[2] |= 0x01
-	}
-	if s.Buttons&ButtonUp != 0 {
-		out[2] |= 0x02
-	}
-	if s.Buttons&ButtonRight != 0 {
-		out[2] |= 0x04
-	}
-	if s.Buttons&ButtonLeft != 0 {
-		out[2] |= 0x08
-	}
-	if s.Buttons&ButtonL != 0 {
-		out[2] |= 0x40
-	}
-	if s.Buttons&ButtonZL != 0 {
-		out[2] |= 0x80
-	}
-	if s.Buttons&ButtonGR != 0 {
-		out[3] |= 0x01
-	}
-	if s.Buttons&ButtonGL != 0 {
-		out[3] |= 0x02
-	}
-	if s.Buttons&ButtonHeadset != 0 {
-		out[3] |= 0x10
-	}
+	encodeButtonMap(s.Buttons, commonButtonMap, out[:])
 	return out
 }
 
 func (s InputState) proButtonBytes() [3]byte {
 	var out [3]byte
-	if s.Buttons&ButtonB != 0 {
-		out[0] |= 0x01
-	}
-	if s.Buttons&ButtonA != 0 {
-		out[0] |= 0x02
-	}
-	if s.Buttons&ButtonY != 0 {
-		out[0] |= 0x04
-	}
-	if s.Buttons&ButtonX != 0 {
-		out[0] |= 0x08
-	}
-	if s.Buttons&ButtonR != 0 {
-		out[0] |= 0x10
-	}
-	if s.Buttons&ButtonZR != 0 {
-		out[0] |= 0x20
-	}
-	if s.Buttons&ButtonPlus != 0 {
-		out[0] |= 0x40
-	}
-	if s.Buttons&ButtonRightStick != 0 {
-		out[0] |= 0x80
-	}
-	if s.Buttons&ButtonDown != 0 {
-		out[1] |= 0x01
-	}
-	if s.Buttons&ButtonRight != 0 {
-		out[1] |= 0x02
-	}
-	if s.Buttons&ButtonLeft != 0 {
-		out[1] |= 0x04
-	}
-	if s.Buttons&ButtonUp != 0 {
-		out[1] |= 0x08
-	}
-	if s.Buttons&ButtonL != 0 {
-		out[1] |= 0x10
-	}
-	if s.Buttons&ButtonZL != 0 {
-		out[1] |= 0x20
-	}
-	if s.Buttons&ButtonMinus != 0 {
-		out[1] |= 0x40
-	}
-	if s.Buttons&ButtonLeftStick != 0 {
-		out[1] |= 0x80
-	}
-	if s.Buttons&ButtonHome != 0 {
-		out[2] |= 0x01
-	}
-	if s.Buttons&ButtonCapture != 0 {
-		out[2] |= 0x02
-	}
-	if s.Buttons&ButtonGR != 0 {
-		out[2] |= 0x04
-	}
-	if s.Buttons&ButtonGL != 0 {
-		out[2] |= 0x08
-	}
-	if s.Buttons&ButtonC != 0 {
-		out[2] |= 0x10
-	}
+	encodeButtonMap(s.Buttons, proButtonMap, out[:])
 	return out
+}
+
+type buttonReportBit struct {
+	button uint32
+	index  int
+	mask   byte
+}
+
+func encodeButtonMap(buttons uint32, mapping []buttonReportBit, out []byte) {
+	for _, bit := range mapping {
+		if buttons&bit.button != 0 {
+			out[bit.index] |= bit.mask
+		}
+	}
+}
+
+var commonButtonMap = []buttonReportBit{
+	{ButtonY, 0, 0x01},
+	{ButtonX, 0, 0x02},
+	{ButtonB, 0, 0x04},
+	{ButtonA, 0, 0x08},
+	{ButtonR, 0, 0x40},
+	{ButtonZR, 0, 0x80},
+	{ButtonMinus, 1, 0x01},
+	{ButtonPlus, 1, 0x02},
+	{ButtonRightStick, 1, 0x04},
+	{ButtonLeftStick, 1, 0x08},
+	{ButtonHome, 1, 0x10},
+	{ButtonCapture, 1, 0x20},
+	{ButtonC, 1, 0x40},
+	{ButtonDown, 2, 0x01},
+	{ButtonUp, 2, 0x02},
+	{ButtonRight, 2, 0x04},
+	{ButtonLeft, 2, 0x08},
+	{ButtonL, 2, 0x40},
+	{ButtonZL, 2, 0x80},
+	{ButtonGR, 3, 0x01},
+	{ButtonGL, 3, 0x02},
+	{ButtonHeadset, 3, 0x10},
+}
+
+var proButtonMap = []buttonReportBit{
+	{ButtonB, 0, 0x01},
+	{ButtonA, 0, 0x02},
+	{ButtonY, 0, 0x04},
+	{ButtonX, 0, 0x08},
+	{ButtonR, 0, 0x10},
+	{ButtonZR, 0, 0x20},
+	{ButtonPlus, 0, 0x40},
+	{ButtonRightStick, 0, 0x80},
+	{ButtonDown, 1, 0x01},
+	{ButtonRight, 1, 0x02},
+	{ButtonLeft, 1, 0x04},
+	{ButtonUp, 1, 0x08},
+	{ButtonL, 1, 0x10},
+	{ButtonZL, 1, 0x20},
+	{ButtonMinus, 1, 0x40},
+	{ButtonLeftStick, 1, 0x80},
+	{ButtonHome, 2, 0x01},
+	{ButtonCapture, 2, 0x02},
+	{ButtonGR, 2, 0x04},
+	{ButtonGL, 2, 0x08},
+	{ButtonC, 2, 0x10},
 }
 
 func packStick12(out []byte, x, y uint16) {
@@ -303,23 +251,23 @@ func clampStick(v uint16) uint16 {
 	return v
 }
 
-func powerInfo(s InputState) uint8 {
-	level := s.BatteryLevel
+func powerInfo(meta MetaState) uint8 {
+	level := meta.BatteryLevel
 	if level > BatteryMax {
 		level = BatteryMax
 	}
 	out := (level & 0x0F) << 2
-	if s.ExternalPower {
+	if meta.ExternalPower {
 		out |= 0x01
 	}
-	if s.Charging {
+	if meta.Charging {
 		out |= 0x02
 	}
 	return out
 }
 
-func chargingState(s InputState) uint8 {
-	if s.Charging {
+func chargingState(meta MetaState) uint8 {
+	if meta.Charging {
 		return 0x34
 	}
 	return 0x20

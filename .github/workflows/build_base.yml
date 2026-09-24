@@ -25,29 +25,33 @@ jobs:
                   fetch-depth: 0
 
             - name: Set up Go
-              uses: actions/setup-go@v6
+              uses: actions/setup-go@v6.4.0
               with:
                   go-version: stable
                   cache: true
                   cache-dependency-path: |
                       go.sum
 
+            - name: Setup just
+              uses: extractions/setup-just@v3
+
+            - name: Install goversioninfo (Windows)
+              if: ${{ matrix.target.goos == 'windows' }}
+              shell: pwsh
+              run: |
+                  go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0
+
             - name: Show Go version
               run: go version
 
-            - name: Verify gofmt
-              shell: bash
-              run: |
-                  set -euo pipefail
-                  files="$(gofmt -l .)"
-                  if [ -n "$files" ]; then
-                    echo "format check failed for:"
-                    echo "$files"
-                    exit 1
-                  fi
+            - name: Lint
+              uses: golangci/golangci-lint-action@v9.2.0
+              with:
+                  version: latest
+                  install-mode: goinstall
 
             - name: Run tests
-              run: go test -count=1 -v -coverpkg="./..." -coverprofile="coverage.txt" ./...
+              run: just test-coverage
 
             - name: Upload coverage to Codecov
               uses: codecov/codecov-action@v6
@@ -58,16 +62,16 @@ jobs:
 
     build:
         name: Build binaries (${{ matrix.target.goos }}/${{ matrix.target.goarch }})
-        runs-on: ubuntu-latest
+        runs-on: ${{ matrix.target.runner }}
         needs: test
         strategy:
             fail-fast: false
             matrix:
                 target:
-                    - { goos: linux, goarch: amd64, ext: "" }
-                    - { goos: linux, goarch: arm64, ext: "" }
-                    - { goos: windows, goarch: amd64, ext: ".exe" }
-                    - { goos: windows, goarch: arm64, ext: ".exe" }
+                    - { goos: linux, goarch: amd64, ext: "", runner: ubuntu-latest }
+                    - { goos: linux, goarch: arm64, ext: "", runner: ubuntu-latest }
+                    - { goos: windows, goarch: amd64, ext: ".exe", runner: windows-latest }
+                    - { goos: windows, goarch: arm64, ext: ".exe", runner: windows-latest }
         steps:
             - name: Checkout code
               uses: actions/checkout@v6
@@ -75,80 +79,66 @@ jobs:
                   fetch-depth: 0
 
             - name: Set up Go
-              uses: actions/setup-go@v6
+              uses: actions/setup-go@v6.4.0
               with:
                   go-version: 1.26
                   cache: true
                   cache-dependency-path: |
                       go.sum
 
-            - name: Generate Windows version info
-              if: matrix.target.goos == 'windows'
+            - name: Setup just
+              uses: extractions/setup-just@v3
+
+            - name: Install goversioninfo
+              shell: pwsh
               run: |
-                  VERSION=$(git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --always || echo "v0.0.0-dev")
-                  git fetch --tags --force || true
-                  if ! echo "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+'; then
-                    VERSION="v0.0.0-dev"
-                  fi
-                  go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
-
-                  VER_STRIPPED=${VERSION#v}
-                  IFS='.-' read -ra PARTS <<< "$VER_STRIPPED"
-                  MAJOR=${PARTS[0]:-0}
-                  MINOR=${PARTS[1]:-0}
-                  PATCH=${PARTS[2]:-0}
-                  BUILD=0
-                  if [ ${#PARTS[@]} -gt 3 ]; then
-                    BUILD_STR="${PARTS[3]}"
-                    if [[ "$BUILD_STR" =~ ^[0-9]+$ ]]; then
-                      BUILD=$BUILD_STR
-                    fi
-                  fi
-                  if ! [[ "$MAJOR" =~ ^[0-9]+$ && "$MINOR" =~ ^[0-9]+$ && "$PATCH" =~ ^[0-9]+$ && "$BUILD" =~ ^[0-9]+$ ]]; then
-                    MAJOR=0; MINOR=0; PATCH=0; BUILD=0;
-                  fi
-
-                  jq --arg major "$MAJOR" --arg minor "$MINOR" --arg patch "$PATCH" --arg build "$BUILD" \
-                     --arg verStr "$MAJOR.$MINOR.$PATCH.$BUILD" --arg prodVer "$VER_STRIPPED" \
-                     '.FixedFileInfo.FileVersion.Major = ($major | tonumber) |
-                      .FixedFileInfo.FileVersion.Minor = ($minor | tonumber) |
-                      .FixedFileInfo.FileVersion.Patch = ($patch | tonumber) |
-                      .FixedFileInfo.FileVersion.Build = ($build | tonumber) |
-                      .FixedFileInfo.ProductVersion.Major = ($major | tonumber) |
-                      .FixedFileInfo.ProductVersion.Minor = ($minor | tonumber) |
-                      .FixedFileInfo.ProductVersion.Patch = ($patch | tonumber) |
-                      .FixedFileInfo.ProductVersion.Build = ($build | tonumber) |
-                      .StringFileInfo.FileVersion = $verStr |
-                      .StringFileInfo.ProductVersion = $prodVer' \
-                     versioninfo.json > versioninfo.tmp.json
-
-                  echo "Generating resource.syso for ${{ matrix.target.goarch }}";
-                  if [ "${{ matrix.target.goarch }}" = "amd64" ]; then
-                    goversioninfo -64 -o cmd/viiper/resource.syso versioninfo.tmp.json
-                  elif [ "${{ matrix.target.goarch }}" = "arm64" ]; then
-                    # arm64 requires both -arm and -64 flags per goversioninfo flag semantics
-                    goversioninfo -arm -64 -o cmd/viiper/resource.syso versioninfo.tmp.json
-                  else
-                    goversioninfo -o cmd/viiper/resource.syso versioninfo.tmp.json
-                  fi
+                  go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0
 
             - name: Build
               env:
                   GOOS: ${{ matrix.target.goos }}
                   GOARCH: ${{ matrix.target.goarch }}
                   CGO_ENABLED: 0
+                  BUILD_TYPE: Release
+                  OUTPUT_NAME: viiper-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}
               run: |
-                  VERSION=$(git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --always || echo "v0.0.0-dev")
-                  mkdir -p dist
-                  go build -trimpath -ldflags "-s -w -X github.com/Alia5/VIIPER/internal/codegen/common.Version=${VERSION}" -o dist/viiper-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }} ./cmd/viiper
-                  ls -la dist
+                  just build Release
 
-            - name: Upload artifact
-              if: ${{ inputs.upload_artifacts }}
+            - name: Package (Linux)
+              if: ${{ matrix.target.goos == 'linux' }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  rm -rf dist/package
+                  mkdir -p dist/package
+                  cp dist/viiper-${{ matrix.target.goos }}-${{ matrix.target.goarch }} dist/package/viiper
+                  cp dist/licenses.txt dist/package/licenses.txt
+                  tar -czf dist/viiper-${{ matrix.target.goos }}-${{ matrix.target.goarch }}.tar.gz -C dist/package viiper licenses.txt
+
+            - name: Package (Windows)
+              if: ${{ matrix.target.goos == 'windows' }}
+              shell: pwsh
+              run: |
+                  Remove-Item -Recurse -Force dist/package -ErrorAction SilentlyContinue
+                  New-Item -ItemType Directory -Force -Path dist/package | Out-Null
+                  Copy-Item dist/viiper-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }} dist/package/viiper.exe -Force
+                  Copy-Item dist/licenses.txt dist/package/licenses.txt -Force
+                  Compress-Archive -Path dist/package/viiper.exe, dist/package/licenses.txt -DestinationPath dist/viiper-${{ matrix.target.goos }}-${{ matrix.target.goarch }}.zip -Force
+
+            - name: Upload artifact (Linux)
+              if: ${{ inputs.upload_artifacts && matrix.target.goos == 'linux' }}
               uses: actions/upload-artifact@v7
               with:
                   name: VIIPER-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ inputs.artifact_suffix }}
-                  path: dist/viiper-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ matrix.target.ext }}
+                  path: dist/viiper-${{ matrix.target.goos }}-${{ matrix.target.goarch }}.tar.gz
+                  if-no-files-found: error
+
+            - name: Upload artifact (Windows)
+              if: ${{ inputs.upload_artifacts && matrix.target.goos == 'windows' }}
+              uses: actions/upload-artifact@v7
+              with:
+                  name: VIIPER-${{ matrix.target.goos }}-${{ matrix.target.goarch }}${{ inputs.artifact_suffix }}
+                  path: dist/viiper-${{ matrix.target.goos }}-${{ matrix.target.goarch }}.zip
                   if-no-files-found: error
 
     libviiper-linux:
@@ -162,23 +152,22 @@ jobs:
                   fetch-depth: 0
 
             - name: Set up Go
-              uses: actions/setup-go@v6
+              uses: actions/setup-go@v6.4.0
               with:
                   go-version: 1.26
                   cache: true
                   cache-dependency-path: |
                       go.sum
 
+            - name: Setup just
+              uses: extractions/setup-just@v3
+
             - name: Build
-              env:
-                  CGO_ENABLED: 1
               run: |
-                  mkdir -p dist/libVIIPER
-                  go build -buildmode=c-shared -trimpath -o dist/libVIIPER/libVIIPER.so ./lib/viiper
-                  go run ./lib/viiper/postbuild
+                  just build-libVIIPER Release
 
             - name: Package
-              run: cd dist/libVIIPER && zip libVIIPER-linux-amd64.zip libVIIPER.so libVIIPER.h
+              run: cd dist/libVIIPER && zip libVIIPER-linux-amd64.zip libVIIPER.so libVIIPER.h licenses.txt
 
             - name: Upload artifact
               if: ${{ inputs.upload_artifacts }}
@@ -190,7 +179,7 @@ jobs:
 
     libviiper-windows:
         name: Build libVIIPER (windows/amd64)
-        runs-on: ubuntu-latest
+        runs-on: windows-latest
         needs: test
         steps:
             - name: Checkout code
@@ -199,71 +188,35 @@ jobs:
                   fetch-depth: 0
 
             - name: Set up Go
-              uses: actions/setup-go@v6
+              uses: actions/setup-go@v6.4.0
               with:
                   go-version: 1.26
                   cache: true
                   cache-dependency-path: |
                       go.sum
 
-            - name: Install mingw cross-compiler
-              run: sudo apt-get install -y gcc-mingw-w64-x86-64 mingw-w64-tools
+            - name: Setup just
+              uses: extractions/setup-just@v3
 
-            - name: Generate Windows version info
+            - name: Install build tools
+              shell: pwsh
               run: |
-                  VERSION=$(git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --always || echo "v0.0.0-dev")
-                  git fetch --tags --force || true
-                  if ! echo "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+'; then
-                    VERSION="v0.0.0-dev"
-                  fi
-                  go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
-
-                  VER_STRIPPED=${VERSION#v}
-                  IFS='.-' read -ra PARTS <<< "$VER_STRIPPED"
-                  MAJOR=${PARTS[0]:-0}
-                  MINOR=${PARTS[1]:-0}
-                  PATCH=${PARTS[2]:-0}
-                  BUILD=0
-                  if [ ${#PARTS[@]} -gt 3 ]; then
-                    BUILD_STR="${PARTS[3]}"
-                    if [[ "$BUILD_STR" =~ ^[0-9]+$ ]]; then
-                      BUILD=$BUILD_STR
-                    fi
-                  fi
-                  if ! [[ "$MAJOR" =~ ^[0-9]+$ && "$MINOR" =~ ^[0-9]+$ && "$PATCH" =~ ^[0-9]+$ && "$BUILD" =~ ^[0-9]+$ ]]; then
-                    MAJOR=0; MINOR=0; PATCH=0; BUILD=0;
-                  fi
-
-                  jq --arg major "$MAJOR" --arg minor "$MINOR" --arg patch "$PATCH" --arg build "$BUILD" \
-                     --arg verStr "$MAJOR.$MINOR.$PATCH.$BUILD" --arg prodVer "$VER_STRIPPED" \
-                     '.FixedFileInfo.FileVersion.Major = ($major | tonumber) |
-                      .FixedFileInfo.FileVersion.Minor = ($minor | tonumber) |
-                      .FixedFileInfo.FileVersion.Patch = ($patch | tonumber) |
-                      .FixedFileInfo.FileVersion.Build = ($build | tonumber) |
-                      .FixedFileInfo.ProductVersion.Major = ($major | tonumber) |
-                      .FixedFileInfo.ProductVersion.Minor = ($minor | tonumber) |
-                      .FixedFileInfo.ProductVersion.Patch = ($patch | tonumber) |
-                      .FixedFileInfo.ProductVersion.Build = ($build | tonumber) |
-                      .StringFileInfo.FileVersion = $verStr |
-                      .StringFileInfo.ProductVersion = $prodVer' \
-                     lib/viiper/versioninfo.json > libviiper.versioninfo.tmp.json
-
-                  goversioninfo -64 -o lib/viiper/resource.syso libviiper.versioninfo.tmp.json
+                  winget install -e --id MartinStorsjo.LLVM-MinGW.UCRT --accept-package-agreements --accept-source-agreements
+                  winget install -e --id Kitware.CMake --accept-package-agreements --accept-source-agreements
+                  if (Test-Path "C:\Program Files\LLVM-MinGW\bin") {
+                    "C:\Program Files\LLVM-MinGW\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+                  }
+                  exit 0
 
             - name: Build
-              env:
-                  CGO_ENABLED: 1
-                  GOOS: windows
-                  GOARCH: amd64
-                  CC: x86_64-w64-mingw32-gcc
+              shell: bash
               run: |
-                  mkdir -p dist/libVIIPER
-                  go build -buildmode=c-shared -trimpath -o dist/libVIIPER/libVIIPER.dll ./lib/viiper
-                  cd dist/libVIIPER && gendef libVIIPER.dll && cd ../..
-                  GOOS= GOARCH= CGO_ENABLED=0 CC= go run ./lib/viiper/postbuild
+                  just build-libVIIPER Release
 
             - name: Package
-              run: cd dist/libVIIPER && zip libVIIPER-windows-amd64.zip libVIIPER.dll libVIIPER.def libVIIPER.h
+              shell: pwsh
+              run: |
+                  Compress-Archive -Path dist/libVIIPER/libVIIPER.dll, dist/libVIIPER/libVIIPER.def, dist/libVIIPER/libVIIPER.h, dist/libVIIPER/licenses.txt -DestinationPath dist/libVIIPER/libVIIPER-windows-amd64.zip -Force
 
             - name: Upload artifact
               if: ${{ inputs.upload_artifacts }}
