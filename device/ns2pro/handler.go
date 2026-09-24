@@ -1,6 +1,7 @@
 package ns2pro
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,8 +18,42 @@ func init() {
 
 type handler struct{}
 
+// serials holds the serial numbers of NS2 Pro devices in use.
+var serials = device.NewIdentityPool()
+
 func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
-	return New(o)
+	if o == nil {
+		o = &device.CreateOptions{}
+	}
+
+	metaState := *defaultMetaState()
+	if o.DeviceSpecific != "" {
+		if err := json.Unmarshal([]byte(o.DeviceSpecific), &metaState); err != nil {
+			return nil, fmt.Errorf("invalid device specific JSON: %w", err)
+		}
+	}
+
+	serial := metaState.SerialNumber
+	if serial == "" {
+		serial = DefaultSerial
+	}
+	metaState.SerialNumber = serials.Reserve(serial)
+
+	b, err := json.Marshal(metaState)
+	if err != nil {
+		return nil, fmt.Errorf("marshal meta state: %w", err)
+	}
+	o.DeviceSpecific = string(b)
+
+	d, err := New(o)
+	if err != nil {
+		serials.Release(metaState.SerialNumber)
+		return nil, err
+	}
+	// Held for as long as the device is on the bus, not for one stream.
+	reserved := metaState.SerialNumber
+	d.OnRelease(func() { serials.Release(reserved) })
+	return d, nil
 }
 
 func (h *handler) StreamHandler() api.StreamHandlerFunc {
@@ -31,7 +66,7 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 			return fmt.Errorf("device is not ns2pro")
 		}
 
-		ns2.SetOutputCallback(func(feedback OutputState) {
+		clearOutputCallback := ns2.SetOutputCallback(func(feedback OutputState) {
 			data, err := feedback.MarshalBinary()
 			if err != nil {
 				logger.Error("failed to marshal ns2pro feedback", "error", err)
@@ -41,6 +76,7 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 				logger.Error("failed to send ns2pro feedback", "error", err)
 			}
 		})
+		defer clearOutputCallback()
 
 		buf := make([]byte, InputWireSize)
 		for {
@@ -59,4 +95,19 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 			ns2.UpdateInputState(state)
 		}
 	}
+}
+
+func (h *handler) UpdateMetaState(meta string, dev *usb.Device) error {
+	ns2, ok := (*dev).(*NS2Pro)
+	if !ok {
+		return fmt.Errorf("%w: expected ns2pro", device.ErrWrongDeviceType)
+	}
+
+	metaState := *defaultMetaState()
+	if err := json.Unmarshal([]byte(meta), &metaState); err != nil {
+		return fmt.Errorf("unmarshal meta state: %w", err)
+	}
+
+	ns2.SetMetaState(metaState)
+	return nil
 }

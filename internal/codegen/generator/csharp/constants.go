@@ -56,10 +56,12 @@ func generateConstants(logger *slog.Logger, deviceDir string, deviceName string,
 		Device     string
 		OutputSize int
 		EnumGroups []enumGroup
+		Scalars    []scalarConstant
 		Maps       []mapData
 	}{
 		Device:     pascalDevice,
 		OutputSize: outputSize,
+		Scalars:    extractScalarConstants(deviceConsts.Constants),
 		Maps:       maps,
 	}
 
@@ -73,9 +75,16 @@ func generateConstants(logger *slog.Logger, deviceDir string, deviceName string,
 	if err != nil {
 		return fmt.Errorf("creating file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
-	tmpl := template.Must(template.New("constants").Parse(constantsTemplate))
+	tmpl := template.Must(template.New("constants").Funcs(template.FuncMap{
+		"nullableType": func(typeName string) string {
+			if typeName == "string" {
+				return "string?"
+			}
+			return typeName
+		},
+	}).Parse(constantsTemplate))
 	if err := tmpl.Execute(f, data); err != nil {
 		return fmt.Errorf("executing template: %w", err)
 	}
@@ -97,6 +106,12 @@ type constantInfo struct {
 	Type  string
 }
 
+type scalarConstant struct {
+	Name  string
+	Value string
+	Type  string
+}
+
 type mapData struct {
 	Name      string
 	KeyType   string
@@ -113,6 +128,10 @@ func groupConstantsByPrefix(constants []scanner.ConstantInfo) []enumGroup {
 	groups := make(map[string]*enumGroup)
 
 	for _, c := range constants {
+		if !common.IsIntegerConst(c.Value, c.Type) {
+			continue
+		}
+
 		prefix := common.ExtractPrefix(c.Name)
 		if prefix == "" {
 			continue
@@ -144,6 +163,24 @@ func groupConstantsByPrefix(constants []scanner.ConstantInfo) []enumGroup {
 		return result[i].Name < result[j].Name
 	})
 
+	return result
+}
+
+func extractScalarConstants(constants []scanner.ConstantInfo) []scalarConstant {
+	result := make([]scalarConstant, 0)
+	for _, c := range constants {
+		if common.IsIntegerConst(c.Value, c.Type) {
+			continue
+		}
+		result = append(result, scalarConstant{
+			Name:  c.Name,
+			Value: formatConstValue(c.Value, c.Type),
+			Type:  mapGoConstTypeToCSharp(c.Type),
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
 	return result
 }
 
@@ -243,7 +280,11 @@ func isFlags(constants []constantInfo) bool {
 	for _, c := range constants {
 		if strings.HasPrefix(c.Value, "0x") {
 			var val uint64
-			fmt.Sscanf(c.Value, "0x%x", &val)
+			_, err := fmt.Sscanf(c.Value, "0x%x", &val)
+			if err != nil {
+				slog.Error("Failed to parse constant value for flags inference", "value", c.Value, "error", err)
+				continue
+			}
 			if val > 0 && (val&(val-1)) == 0 {
 				return true
 			}
@@ -260,12 +301,21 @@ func formatConstValue(value interface{}, goType string) string {
 
 	switch v := value.(type) {
 	case int64:
+		if v < 0 {
+			return fmt.Sprintf("%d", v)
+		}
 		return fmt.Sprintf("0x%X", v)
 	case uint64:
 		return fmt.Sprintf("0x%X", v)
 	case int:
+		if v < 0 {
+			return fmt.Sprintf("%d", v)
+		}
 		return fmt.Sprintf("0x%X", v)
 	case float64:
+		if base == "float32" {
+			return fmt.Sprintf("%ff", v)
+		}
 		return fmt.Sprintf("%f", v)
 	case string:
 		if base == "string" {
@@ -311,6 +361,10 @@ func mapGoConstTypeToCSharp(goType string) string {
 		return "uint"
 	case "uint64":
 		return "ulong"
+	case "float32":
+		return "float"
+	case "float64":
+		return "double"
 	case "string":
 		return "string"
 	case "char":
@@ -422,9 +476,10 @@ func formatMapKey(key string, goType string) string {
 		}
 		if len(key) == 1 {
 			if key[0] >= 32 && key[0] <= 126 {
-				if key[0] == '\'' {
+				switch key[0] {
+				case '\'':
 					return "(byte)'\\''"
-				} else if key[0] == '\\' {
+				case '\\':
 					return "(byte)'\\\\'"
 				}
 				return fmt.Sprintf("(byte)'%s'", key)
@@ -482,14 +537,18 @@ using System.Collections.Generic;
 
 namespace Viiper.Client.Devices.{{.Device}};
 
-{{if gt .OutputSize 0}}
+{{if or (gt .OutputSize 0) (gt (len .Scalars) 0)}}
 /// <summary>
 /// Size in bytes of {{.Device}} output (server-to-client) messages.
 /// Use this constant to allocate buffers for reading device output.
 /// </summary>
 public static class {{.Device}}
 {
+{{if gt .OutputSize 0}}
     public const int OutputSize = {{.OutputSize}};
+{{end}}
+{{range .Scalars}}    public const {{.Type}} {{.Name}} = {{.Value}};
+{{end}}
 }
 
 {{end}}
@@ -526,7 +585,7 @@ public static class {{.Name}}
     /// <summary>
     /// Get the value for the given key, or return the default value if not found.
     /// </summary>
-    public static {{.ValueType}} GetValueOrDefault({{.KeyType}} key, {{.ValueType}} defaultValue = default)
+	public static {{nullableType .ValueType}} GetValueOrDefault({{.KeyType}} key, {{nullableType .ValueType}} defaultValue = default)
     {
         return _map.TryGetValue(key, out var value) ? value : defaultValue;
     }

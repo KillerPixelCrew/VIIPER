@@ -3,50 +3,159 @@ package dualsense
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
+	"maps"
+	"math"
+	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
-	"github.com/Alia5/VIIPER/usb/hid"
 	"github.com/Alia5/VIIPER/usbip"
 )
 
 type DualSense struct {
-	gate *device.InputGate
-	// inputState is stored by value: retaining a caller pointer forced a
-	// heap allocation per UpdateInputState call at input rate.
-	inputState InputState
-	stateMu    sync.Mutex
-	timeMu     sync.Mutex
+	device.Releaser
+
+	inputCh    chan *InputState
+	inputState *InputState
+	metaState  *MetaState
+
 	outputFunc func(OutputState)
 	descriptor usb.Descriptor
-	now        func() time.Time
 
-	usbSensorTimestamp uint32
-	usbPacketCounter   uint32
-	lastUSBReportAt    time.Time
+	subcommand [2]byte
+
+	seqCounter    atomic.Uint32
+	timestampBase time.Time
+
+	// edge is set for the DualSense Edge variant, which shares this type.
+	edge bool
+
+	mtx sync.Mutex
 }
 
-const usbSensorTimestampStep = 12000
-
 func New(o *device.CreateOptions) (*DualSense, error) {
+	return new(o, false)
+}
+func NewEdge(o *device.CreateOptions) (*DualSense, error) {
+	return new(o, true)
+}
+
+func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
+	metaState := &MetaState{
+		SerialNumber:       DefaultSerialNumberDS,
+		MACAddress:         DefaultMACAddressDS,
+		Board:              DefaultBoardStringDS,
+		BuildTime:          DefaultBuildTime,
+		BatteryStatus:      DefaultBatteryStatus,
+		TemperatureCelsius: DefaultTemperature,
+		BatteryVoltage:     DefaultVoltage,
+		ShellColor:         DefaultShellColor,
+	}
+	if edge {
+		metaState.SerialNumber = DefaultSerialNumberDSEdge
+		metaState.MACAddress = DefaultMACAddressDSEdge
+		metaState.Board = DefaultBoardStringEdge
+	}
+	if o != nil && o.DeviceSpecific != "" {
+		var newMeta MetaState
+		err := json.Unmarshal([]byte(o.DeviceSpecific), &newMeta)
+		if err != nil {
+			return nil, fmt.Errorf("invalid JSON payload: %w", err)
+		}
+		if newMeta.SerialNumber != "" {
+			metaState.SerialNumber = newMeta.SerialNumber
+		}
+		if newMeta.MACAddress != "" {
+			metaState.MACAddress = newMeta.MACAddress
+		}
+		if newMeta.Board != "" {
+			metaState.Board = newMeta.Board
+		}
+		if !newMeta.BuildTime.IsZero() {
+			metaState.BuildTime = newMeta.BuildTime
+		}
+		if newMeta.BatteryStatus != 0 {
+			metaState.BatteryStatus = newMeta.BatteryStatus
+		}
+		if newMeta.TemperatureCelsius != 0 {
+			metaState.TemperatureCelsius = newMeta.TemperatureCelsius
+		}
+		if newMeta.BatteryVoltage != 0 {
+			metaState.BatteryVoltage = newMeta.BatteryVoltage
+		}
+		metaState.ShellColor = newMeta.ShellColor
+	}
+	// Direct constructor callers (lib/viiper) get the colour byte in the serial
+	// just as API-created devices do.
+	metaState.SerialNumber = applyShellColor(metaState.SerialNumber, metaState.ShellColor)
+
 	d := &DualSense{
-		gate: device.NewInputGate(),
 		descriptor: defaultDescriptor,
-		now:        time.Now,
+		metaState:  metaState,
+		edge:       edge,
 	}
+	// The struct copy above still shares defaultDescriptor's Strings map, and
+	// the Edge variant rewrites the product string.
+	d.descriptor.Strings = maps.Clone(defaultDescriptor.Strings)
+	d.descriptor.Device.IDProduct = DefaultPIDDS
+	if edge {
+		d.descriptor.Device.IDProduct = DefaultPIDDSEdge
+		d.descriptor.Strings[2] = "DualSense Edge Wireless Controller"
+	}
+
 	if o != nil {
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
 	}
+
+	slog.Info("DualSense device instantiated",
+		"edge", edge,
+		"vid", d.descriptor.Device.IDVendor,
+		"pid", d.descriptor.Device.IDProduct,
+		"interfaces", len(d.descriptor.Interfaces))
+
+	d.inputState = NewInputState()
+	d.inputCh = make(chan *InputState, 1)
+	d.inputCh <- d.inputState
+	d.timestampBase = time.Now()
+
 	return d, nil
+}
+
+// applyShellColor writes the first two characters of the shell colour code into
+// the serial's colour byte (characters 4 and 5), as a real controller does.
+func applyShellColor(serial, color string) string {
+	if color == "" || len(serial) < 6 || len(color) < 2 {
+		return serial
+	}
+	return serial[:4] + strings.ToUpper(color[:2]) + serial[6:]
+}
+
+// DeviceType returns the registry name of this variant. Both variants share
+// one Go type, so the API cannot tell them apart by reflection.
+func (d *DualSense) DeviceType() string {
+	if d.edge {
+		return "dualsenseedge"
+	}
+	return "dualsense"
+}
+
+func (d *DualSense) SetMetaState(meta MetaState) {
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+	d.metaState = &meta
 }
 
 func (d *DualSense) SetOutputCallback(f func(OutputState)) {
@@ -54,88 +163,21 @@ func (d *DualSense) SetOutputCallback(f func(OutputState)) {
 }
 
 func (d *DualSense) UpdateInputState(state *InputState) {
-	d.stateMu.Lock()
 	if state == nil {
-		d.inputState = InputState{}
+		state = NewInputState()
 	} else {
-		d.inputState = *state
+		// Snapshot it: the caller may reuse and mutate its state after this returns.
+		snapshot := *state
+		state = &snapshot
 	}
-	d.stateMu.Unlock()
-	d.gate.Signal()
-}
-
-func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
-	if dir == usbip.DirIn {
-		switch ep {
-		case 4:
-			if device.GateCancelled == d.gate.Wait(ctx) {
-				return nil
-			}
-			d.stateMu.Lock()
-			st := d.inputState
-			d.stateMu.Unlock()
-			return d.buildUSBInputReport(st)
-		default:
-			return nil
-		}
+	d.mtx.Lock()
+	d.inputState = state
+	d.mtx.Unlock()
+	select {
+	case <-d.inputCh:
+	default:
 	}
-
-	if dir == usbip.DirOut && ep == 3 {
-		d.handleOutputReport(out)
-	}
-
-	return nil
-}
-
-func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, _ uint16, wLength uint16, data []byte) ([]byte, bool) {
-	const (
-		hidGetReport = 0x01
-		hidSetReport = 0x09
-
-		reportTypeInput   = 0x01
-		reportTypeOutput  = 0x02
-		reportTypeFeature = 0x03
-	)
-
-	reportType := uint8(wValue >> 8)
-	reportID := uint8(wValue & 0xFF)
-
-	if bmRequestType == 0xA1 && bRequest == hidGetReport {
-		if reportType == reportTypeInput && reportID == ReportIDInput {
-			d.stateMu.Lock()
-			st := d.inputState
-			d.stateMu.Unlock()
-			report := d.buildUSBInputReport(st)
-			if wLength > 0 && int(wLength) < len(report) {
-				return report[:wLength], true
-			}
-			return report, true
-		}
-
-		if reportType == reportTypeFeature {
-			resp := d.featureResponse(reportID)
-			if resp == nil {
-				return nil, false
-			}
-			if wLength > 0 && int(wLength) < len(resp) {
-				return resp[:wLength], true
-			}
-			return resp, true
-		}
-	}
-
-	if bmRequestType == 0x21 && bRequest == hidSetReport {
-		if reportType == reportTypeOutput && reportID == ReportIDOutput {
-			d.handleOutputReport(data)
-			return nil, true
-		}
-	}
-
-	slog.Warn("Unsupported control request",
-		"bmRequestType", bmRequestType,
-		"bRequest", bRequest)
-
-	return nil, false
+	d.inputCh <- state
 }
 
 func (d *DualSense) GetDescriptor() *usb.Descriptor {
@@ -143,272 +185,326 @@ func (d *DualSense) GetDescriptor() *usb.Descriptor {
 }
 
 func (d *DualSense) GetDeviceSpecificArgs() map[string]any {
-	return map[string]any{}
+	var res map[string]any
+	d.mtx.Lock()
+	defer d.mtx.Unlock()
+
+	bytes, err := json.Marshal(d.metaState)
+	if err != nil {
+		return map[string]any{}
+	}
+	err = json.Unmarshal(bytes, &res)
+	if err != nil {
+		return map[string]any{}
+	}
+	return res
 }
 
-func (d *DualSense) nextSensorTimestamp() uint32 {
-	d.timeMu.Lock()
-	defer d.timeMu.Unlock()
-
-	now := d.now()
-	step := uint32(usbSensorTimestampStep)
-	if !d.lastUSBReportAt.IsZero() {
-		elapsed := now.Sub(d.lastUSBReportAt)
-		if elapsed < 0 {
-			elapsed = 0
-		}
-		computed := uint32((uint64(elapsed.Nanoseconds()) * 3) / 1000)
-		if computed > 0 {
-			step = computed
+func (d *DualSense) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
+	if dir == usbip.DirIn {
+		switch ep {
+		case 4:
+			select {
+			case <-ctx.Done():
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					d.mtx.Lock()
+					is := d.inputState
+					ms := *d.metaState
+					d.mtx.Unlock()
+					return d.buildUSBInputReport(is, &ms)
+				}
+				return nil
+			case is := <-d.inputCh:
+				d.mtx.Lock()
+				ms := *d.metaState
+				d.mtx.Unlock()
+				return d.buildUSBInputReport(is, &ms)
+			}
+		default:
+			return nil
 		}
 	}
-	d.lastUSBReportAt = now
 
-	return atomic.AddUint32(&d.usbSensorTimestamp, step)
+	if dir == usbip.DirOut && ep == 3 {
+		if len(out) >= 48 && out[0] == ReportIDOutput {
+			if d.outputFunc != nil {
+				d.outputFunc(parseOutputReport(out))
+			}
+		}
+	}
+
+	return nil
 }
 
-func (d *DualSense) buildUSBInputReport(s InputState) []byte {
+func (d *DualSense) HandleControl(bmRequestType, bRequest uint8, wValue, wIndex, wLength uint16, data []byte) ([]byte, bool) {
+	reportType := uint8(wValue >> 8)
+	reportID := uint8(wValue & 0xFF)
+
+	switch bmRequestType {
+	case hidClassIN:
+		switch bRequest {
+		case hidGetReport:
+			if reportType == reportTypeInput && reportID == ReportIDInput {
+				d.mtx.Lock()
+				is := *d.inputState
+				ms := *d.metaState
+				d.mtx.Unlock()
+				b := d.buildUSBInputReport(&is, &ms)
+				if wLength > 0 && int(wLength) < len(b) {
+					b = b[:wLength]
+				}
+				return b, true
+			}
+			if reportType == reportTypeFeature {
+				if fn, ok := featureGetHandlers[reportID]; ok {
+					b := fn(d)
+					if wLength > 0 && int(wLength) < len(b) {
+						b = b[:wLength]
+					}
+					return b, true
+				}
+			}
+		case hidGetIdle:
+			return []byte{0x00}, true
+		case hidGetProtocol:
+			return []byte{0x01}, true
+		}
+	case hidClassOUT:
+		if bRequest == hidSetReport {
+			switch {
+			case reportType == reportTypeFeature && reportID == featureIDCommand && len(data) >= 3:
+				d.subcommand[0] = data[1]
+				d.subcommand[1] = data[2]
+				return nil, true
+			case reportType == reportTypeFeature:
+				return nil, true
+			case reportType == reportTypeOutput && reportID == ReportIDOutput && len(data) >= 48:
+				if d.outputFunc != nil {
+					d.outputFunc(parseOutputReport(data))
+				}
+				return nil, true
+			}
+		}
+	}
+
+	slog.Warn("DualSense control request unhandled",
+		"bmRequestType", bmRequestType,
+		"bRequest", bRequest,
+		"reportType", reportType,
+		"reportID", reportID,
+		"wIndex", wIndex,
+		"wLength", wLength,
+		"dataLen", len(data))
+
+	return nil, false
+}
+
+var featureGetHandlers = map[byte]func(*DualSense) []byte{
+	featureIDCalibration:     (*DualSense).featureReportCalibration,
+	featureIDPairing:         (*DualSense).featureReportPairing,
+	featureIDFirmware:        (*DualSense).featureReportFirmware,
+	featureIDCommandResponse: (*DualSense).featureReportCommandResponse,
+}
+
+func parseOutputReport(out []byte) OutputState {
+	feedback := OutputState{
+		RumbleSmall: out[3],
+		RumbleLarge: out[4],
+	}
+	if len(out) > 2 {
+		flag1 := out[2]
+		if flag1&0x04 != 0 && len(out) > 47 {
+			feedback.LedRed = out[45]
+			feedback.LedGreen = out[46]
+			feedback.LedBlue = out[47]
+		}
+		if flag1&0x10 != 0 && len(out) > 44 {
+			feedback.PlayerLeds = out[44]
+		}
+	}
+	return feedback
+}
+
+func (d *DualSense) featureReportCalibration() []byte {
+	report := make([]byte, 41)
+	report[0] = featureIDCalibration
+
+	for i, v := range [17]int16{
+		0, 0, 0,
+		8192, -8192, 8192, -8192, 8192, -8192,
+		500, 500,
+		8192, -8192, 8192, -8192, 8192, -8192,
+	} {
+		binary.LittleEndian.PutUint16(report[1+i*2:], uint16(v))
+	}
+
+	report[35] = 0x0B // TODO:
+	return report
+}
+
+func (d *DualSense) featureReportPairing() []byte {
+	report := make([]byte, 20)
+	report[0] = featureIDPairing
+
+	d.mtx.Lock()
+	mac := d.metaState.MACAddress
+	d.mtx.Unlock()
+
+	if hw, err := net.ParseMAC(mac); err == nil && len(hw) == 6 {
+		for i := range 6 {
+			report[1+i] = hw[5-i]
+		}
+	}
+
+	// TODO:
+	report[7] = 0x08
+	report[8] = 0x25
+	report[10] = 0x1E
+	report[12] = 0xEE
+	report[13] = 0x74
+	report[14] = 0xD0
+	report[15] = 0xBC
+	return report
+}
+
+func (d *DualSense) featureReportFirmware() []byte {
+	report := make([]byte, 64)
+	report[0] = featureIDFirmware
+
+	d.mtx.Lock()
+	bt := d.metaState.BuildTime
+	d.mtx.Unlock()
+
+	copy(report[1:12], bt.Format("Jan 02 2006"))
+	copy(report[12:20], bt.Format("15:04:05"))
+
+	report[20] = HardwareType
+	report[21] = 0x01 // TODO: unknown
+	report[22] = 0x44 // TODO: put in CONST!!! // build revision from real device
+
+	binary.LittleEndian.PutUint32(report[24:28], HwInfo)
+
+	// TODO: unknown
+	report[28] = 0x36
+	report[31] = 0x01
+	report[32] = 0xC1
+	report[33] = 0xC8
+
+	binary.LittleEndian.PutUint16(report[44:46], FirmwareVersion)
+
+	// TODO: unknown
+	report[48] = 0x14
+	report[52] = 0x0B
+	report[54] = 0x01
+	report[56] = 0x06
+	return report
+}
+
+func (d *DualSense) featureReportCommandResponse() []byte {
+	report := make([]byte, 64)
+	report[0] = featureIDCommandResponse
+
+	d.mtx.Lock()
+	sub := d.subcommand
+	serial := d.metaState.SerialNumber
+	voltage := d.metaState.BatteryVoltage
+	temp := d.metaState.TemperatureCelsius
+	d.mtx.Unlock()
+
+	switch sub[0] {
+	case subcmdSerial:
+		copy(report[3:21], serial)
+	case subcmdStatus:
+		// nvs locked
+		report[1] = 0x01
+		report[4] = 0x01
+	case subcmdSensors:
+		vRaw := uint16(math.Round(voltage * 1000))
+		report[4] = byte(vRaw)
+		report[5] = byte(vRaw >> 8)
+		tRaw := uint16(math.Max(0, math.Min(4095, math.Round((2470.0-temp*26.0)/0.78125))))
+		report[6] = byte(tRaw)
+		report[7] = byte(tRaw >> 8)
+	default:
+		slog.Warn("DualSense: unknown sub-command for featureIDCommandResponse",
+			"sub0", sub[0], "sub1", sub[1])
+		report[1] = 0x01
+	}
+	return report
+}
+
+func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	b := make([]byte, InputReportSize)
+
 	b[0] = ReportIDInput
+
 	b[1] = uint8(int16(s.LX) + 128)
 	b[2] = uint8(int16(s.LY) + 128)
 	b[3] = uint8(int16(s.RX) + 128)
 	b[4] = uint8(int16(s.RY) + 128)
+
 	b[5] = s.L2
 	b[6] = s.R2
-	b[7] = uint8(atomic.AddUint32(&d.usbPacketCounter, 1))
+
+	b[7] = uint8(d.seqCounter.Add(1))
 
 	usbDPad := uint8(DPadUSBNeutral)
-	if s.DPad&DPadUp != 0 && s.DPad&DPadRight != 0 {
+	switch {
+	case s.DPad&DPadUp != 0 && s.DPad&DPadRight != 0:
 		usbDPad = DPadUSBUpRight
-	} else if s.DPad&DPadUp != 0 && s.DPad&DPadLeft != 0 {
+	case s.DPad&DPadUp != 0 && s.DPad&DPadLeft != 0:
 		usbDPad = DPadUSBUpLeft
-	} else if s.DPad&DPadDown != 0 && s.DPad&DPadRight != 0 {
+	case s.DPad&DPadDown != 0 && s.DPad&DPadRight != 0:
 		usbDPad = DPadUSBDownRight
-	} else if s.DPad&DPadDown != 0 && s.DPad&DPadLeft != 0 {
+	case s.DPad&DPadDown != 0 && s.DPad&DPadLeft != 0:
 		usbDPad = DPadUSBDownLeft
-	} else if s.DPad&DPadUp != 0 {
+	case s.DPad&DPadUp != 0:
 		usbDPad = DPadUSBUp
-	} else if s.DPad&DPadDown != 0 {
+	case s.DPad&DPadDown != 0:
 		usbDPad = DPadUSBDown
-	} else if s.DPad&DPadLeft != 0 {
+	case s.DPad&DPadLeft != 0:
 		usbDPad = DPadUSBLeft
-	} else if s.DPad&DPadRight != 0 {
+	case s.DPad&DPadRight != 0:
 		usbDPad = DPadUSBRight
 	}
-
 	b[8] = (usbDPad & DPadMask) | (uint8(s.Buttons) & 0xF0)
-	buttons1 := uint8(s.Buttons >> 8)
+	buttons := s.Buttons
 	if s.L2 > 0 {
-		buttons1 |= uint8(ButtonL2 >> 8)
+		buttons |= ButtonL2
 	}
 	if s.R2 > 0 {
-		buttons1 |= uint8(ButtonR2 >> 8)
+		buttons |= ButtonR2
 	}
-	b[9] = buttons1
+	b[9] = uint8(buttons >> 8)
 	b[10] = uint8(s.Buttons >> 16)
-	b[11] = uint8(s.Buttons >> 24)
 
 	binary.LittleEndian.PutUint16(b[16:18], uint16(s.GyroX))
 	binary.LittleEndian.PutUint16(b[18:20], uint16(s.GyroY))
 	binary.LittleEndian.PutUint16(b[20:22], uint16(s.GyroZ))
+
 	binary.LittleEndian.PutUint16(b[22:24], uint16(s.AccelX))
 	binary.LittleEndian.PutUint16(b[24:26], uint16(s.AccelY))
 	binary.LittleEndian.PutUint16(b[26:28], uint16(s.AccelZ))
-	binary.LittleEndian.PutUint32(b[28:32], d.nextSensorTimestamp())
 
-	b[53] = StatusDefault
-	encodeTouchPoint(b[33:37], s.TouchX, s.TouchY, s.TouchActive)
-	encodeTouchPoint(b[37:41], 0, 0, false)
+	ts := uint32(time.Since(d.timestampBase).Microseconds() * 3)
+	binary.LittleEndian.PutUint32(b[28:32], ts)
+
+	touch1 := uint8(0)
+	if !s.Touch1Active {
+		touch1 |= TouchInactiveMask
+	}
+	b[33] = touch1
+	encodeTouchCoords(b[34:37], s.Touch1X, s.Touch1Y)
+
+	touch2 := uint8(0)
+	if !s.Touch2Active {
+		touch2 |= TouchInactiveMask
+	}
+	b[37] = touch2
+	encodeTouchCoords(b[38:41], s.Touch2X, s.Touch2Y)
+
+	b[49] = 0x10
+	b[53] = m.BatteryStatus
 
 	return b
-}
-
-func encodeTouchPoint(b []byte, x, y uint16, active bool) {
-	if x > TouchpadMaxX {
-		x = TouchpadMaxX
-	}
-	if y > TouchpadMaxY {
-		y = TouchpadMaxY
-	}
-	b[0] = 0
-	if !active {
-		b[0] = TouchInactiveMask
-	}
-	b[1] = uint8(x & 0xFF)
-	b[2] = uint8((x>>8)&0x0F) | uint8((y&0x0F)<<4)
-	b[3] = uint8(y >> 4)
-}
-
-func (d *DualSense) handleOutputReport(data []byte) {
-	if len(data) == 0 {
-		return
-	}
-	if len(data) > 1 && data[0] == 0x00 {
-		data = data[1:]
-	}
-	if len(data) < OutputReportSize || data[OutOffsetReportID] != ReportIDOutput {
-		return
-	}
-	if d.outputFunc == nil {
-		return
-	}
-	d.outputFunc(OutputState{
-		RumbleSmall: data[OutOffsetRumbleSmall],
-		RumbleLarge: data[OutOffsetRumbleLarge],
-		LedRed:      data[OutOffsetLedRed],
-		LedGreen:    data[OutOffsetLedGreen],
-		LedBlue:     data[OutOffsetLedBlue],
-	})
-}
-
-func (d *DualSense) featureResponse(reportID uint8) []byte {
-	switch reportID {
-	case FeatureReportCalibration:
-		resp := make([]byte, 41)
-		resp[0] = FeatureReportCalibration
-		return resp
-	case FeatureReportPairingInfo:
-		resp := make([]byte, 20)
-		resp[0] = FeatureReportPairingInfo
-		copy(resp[1:7], []byte{0x44, 0x53, 0x35, 0x00, 0x00, 0x01})
-		return resp
-	case FeatureReportFirmware:
-		resp := make([]byte, 64)
-		resp[0] = FeatureReportFirmware
-		binary.LittleEndian.PutUint32(resp[24:28], 0x00010000)
-		binary.LittleEndian.PutUint32(resp[28:32], 0x00010000)
-		binary.LittleEndian.PutUint16(resp[44:46], 0x0221)
-		return resp
-	default:
-		return nil
-	}
-}
-
-var defaultDescriptor = usb.Descriptor{
-	Device: usb.DeviceDescriptor{
-		BcdUSB:             0x0200,
-		BDeviceClass:       0x00,
-		BDeviceSubClass:    0x00,
-		BDeviceProtocol:    0x00,
-		BMaxPacketSize0:    0x40,
-		IDVendor:           DefaultVID,
-		IDProduct:          DefaultPID,
-		BcdDevice:          0x0100,
-		IManufacturer:      0x01,
-		IProduct:           0x02,
-		ISerialNumber:      0x00,
-		BNumConfigurations: 0x01,
-		Speed:              2,
-	},
-	Interfaces: []usb.InterfaceConfig{{
-		Descriptor: usb.InterfaceDescriptor{
-			BInterfaceNumber:   0x00,
-			BAlternateSetting:  0x00,
-			BNumEndpoints:      0x02,
-			BInterfaceClass:    0x03,
-			BInterfaceSubClass: 0x00,
-			BInterfaceProtocol: 0x00,
-			IInterface:         0x00,
-		},
-		HID: &usb.HIDFunction{
-			Descriptor: usb.HIDDescriptor{
-				BcdHID:       0x0111,
-				BCountryCode: 0x00,
-				Descriptors:  []usb.HIDSubDescriptor{{Type: usb.ReportDescType}},
-			},
-			Report: hid.Report{Items: []hid.Item{
-				hid.UsagePage{Page: hid.UsagePageGenericDesktop},
-				hid.Usage{Usage: hid.UsageGamePad},
-				hid.Collection{Kind: hid.CollectionApplication, Items: []hid.Item{
-					hid.AnyItem{Type: hid.ItemTypeGlobal, Tag: 0x08, Data: hid.Data{ReportIDInput}},
-					hid.UsagePage{Page: hid.UsagePageGenericDesktop},
-					hid.Usage{Usage: hid.UsageX},
-					hid.Usage{Usage: hid.UsageY},
-					hid.Usage{Usage: hid.UsageZ},
-					hid.Usage{Usage: hid.UsageRz},
-					hid.LogicalMinimum{Min: 0},
-					hid.LogicalMaximum{Max: 255},
-					hid.ReportSize{Bits: 8},
-					hid.ReportCount{Count: 4},
-					hid.Input{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
-
-					hid.UsagePage{Page: hid.UsagePageGenericDesktop},
-					// L2 / R2 analog triggers. Must be Rx (0x33) / Ry (0x34) — the
-					// usages a real DualSense uses — NOT Z (0x32) / Rz (0x35), which
-					// duplicate the right-stick usages above. Duplicate usages in one
-					// report confuse Windows' RawGameController axis enumeration, which
-					// makes Xbox Game Bar (and other WGI RawGameController consumers)
-					// mis-map the triggers — observed as "LT navigates the tab but RT
-					// doesn't" + double-input. Steam is unaffected (reads raw HID).
-					hid.Usage{Usage: 0x33}, // Rx = L2
-					hid.Usage{Usage: 0x34}, // Ry = R2
-					hid.LogicalMinimum{Min: 0},
-					hid.LogicalMaximum{Max: 255},
-					hid.ReportSize{Bits: 8},
-					hid.ReportCount{Count: 2},
-					hid.Input{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
-
-					hid.UsagePage{Page: 0xFF00},
-					hid.Usage{Usage: 0x20},
-					hid.ReportSize{Bits: 8},
-					hid.ReportCount{Count: 1},
-					hid.Input{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
-
-					hid.UsagePage{Page: hid.UsagePageGenericDesktop},
-					hid.Usage{Usage: 0x39},
-					hid.LogicalMinimum{Min: 0},
-					hid.LogicalMaximum{Max: 7},
-					hid.AnyItem{Type: hid.ItemTypeGlobal, Tag: 0x3, Data: hid.Data{0x00}},
-					hid.AnyItem{Type: hid.ItemTypeGlobal, Tag: 0x4, Data: hid.Data{0x3B, 0x01}},
-					hid.AnyItem{Type: hid.ItemTypeGlobal, Tag: 0x6, Data: hid.Data{0x14}},
-					hid.ReportSize{Bits: 4},
-					hid.ReportCount{Count: 1},
-					hid.Input{Flags: hid.MainData | hid.MainVar | hid.MainAbs | hid.MainNullState},
-					hid.AnyItem{Type: hid.ItemTypeGlobal, Tag: 0x6, Data: hid.Data{0x00}},
-
-					hid.UsagePage{Page: hid.UsagePageButton},
-					hid.UsageMinimum{Min: 0x01},
-					hid.UsageMaximum{Max: 0x0E},
-					hid.LogicalMinimum{Min: 0},
-					hid.LogicalMaximum{Max: 1},
-					hid.ReportCount{Count: 14},
-					hid.ReportSize{Bits: 1},
-					hid.Input{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
-
-					hid.UsagePage{Page: 0xFF00},
-					hid.Usage{Usage: 0x20},
-					hid.ReportSize{Bits: 6},
-					hid.ReportCount{Count: 1},
-					hid.Input{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
-
-					hid.UsagePage{Page: 0xFF00},
-					hid.Usage{Usage: 0x20},
-					hid.LogicalMinimum{Min: 0},
-					hid.LogicalMaximum{Max: 255},
-					hid.ReportSize{Bits: 8},
-					hid.ReportCount{Count: 53},
-					hid.Input{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
-
-					hid.AnyItem{Type: hid.ItemTypeGlobal, Tag: 0x08, Data: hid.Data{ReportIDOutput}},
-					hid.UsagePage{Page: 0xFF00},
-					hid.Usage{Usage: 0x21},
-					hid.LogicalMinimum{Min: 0},
-					hid.LogicalMaximum{Max: 255},
-					hid.ReportSize{Bits: 8},
-					hid.ReportCount{Count: 63},
-					hid.Output{Flags: hid.MainData | hid.MainVar | hid.MainAbs},
-				}},
-			}},
-		},
-		Endpoints: []usb.EndpointDescriptor{
-			{BEndpointAddress: EndpointIn, BMAttributes: 0x03, WMaxPacketSize: 64, BInterval: 5},
-			{BEndpointAddress: EndpointOut, BMAttributes: 0x03, WMaxPacketSize: 64, BInterval: 5},
-		},
-	}},
-	Strings: map[uint8]string{
-		0: "\x04\x09",
-		1: "Sony Interactive Entertainment",
-		2: "Wireless Controller",
-	},
 }

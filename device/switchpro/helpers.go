@@ -59,8 +59,8 @@ func parseRumble(data []byte) (left, right uint8) {
 		return maxU8(hf, lf) * 2
 	}
 
-	left = amp(data[1], data[3])   // bytes 1,3 of left motor
-	right = amp(data[5], data[7])  // bytes 1,3 of right motor
+	left = amp(data[1], data[3])  // bytes 1,3 of left motor
+	right = amp(data[5], data[7]) // bytes 1,3 of right motor
 	return
 }
 

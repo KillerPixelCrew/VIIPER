@@ -117,19 +117,16 @@ func New(o *device.CreateOptions) (*XboxGIP, error) {
 	}
 
 	if o != nil {
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
-		if o.DeviceSpecific != nil {
-			data, err := json.Marshal(o.DeviceSpecific)
-			if err != nil {
-				return nil, fmt.Errorf("invalid JSON payload: %w", err)
-			}
+		if o.DeviceSpecific != "" {
+			data := []byte(o.DeviceSpecific)
 			var args xboxGIPCreateOptions
-			if err = json.Unmarshal(data, &args); err != nil {
+			if err := json.Unmarshal(data, &args); err != nil {
 				return nil, fmt.Errorf("invalid JSON payload: %w", err)
 			}
 		}
@@ -174,8 +171,8 @@ func (d *XboxGIP) logf(format string, args ...any) {
 	}
 	msg := fmt.Sprintf(format, args...)
 	ts := time.Now().Format("15:04:05.000")
-	fmt.Fprintf(d.debugLog, "%s  %s\n", ts, msg)
-	d.debugLog.Sync()
+	_, _ = fmt.Fprintf(d.debugLog, "%s  %s\n", ts, msg)
+	_ = d.debugLog.Sync()
 }
 
 // nextSeq returns the next GIP sequence number (1-255 wrapping).

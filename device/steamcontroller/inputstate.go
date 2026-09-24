@@ -5,6 +5,7 @@ import (
 	"io"
 )
 
+// nolint
 // viiper:wire steamcontroller c2s a:bool x:bool b:bool y:bool l1:bool r1:bool menu:bool steam:bool options:bool dpadDown:bool dpadLeft:bool dpadRight:bool dpadUp:bool l3:bool lGrip:bool rGrip:bool lPadTouch:bool rPadTouch:bool lPadPress:bool rPadPress:bool lPadAndStick:bool lPadX:i16 lPadY:i16 rPadX:i16 rPadY:i16 lTrigger:u16 rTrigger:u16 lStickX:i16 lStickY:i16 accelX:i16 accelY:i16 accelZ:i16 gyroX:i16 gyroY:i16 gyroZ:i16 gyroQuatW:i16 gyroQuatX:i16 gyroQuatY:i16 gyroQuatZ:i16 batteryMv:u16
 type InputState struct {
 	A, X, B, Y        bool
@@ -140,10 +141,10 @@ func (s *InputState) buildReport(frame uint32) []byte {
 	if s.R1 {
 		b[8] |= buttonByte8R1
 	}
-	if triggerRawToByte(s.LTrigger) >= 0xff {
+	if triggerRawToByte(s.LTrigger) == 0xff {
 		b[8] |= buttonByte8L2
 	}
-	if triggerRawToByte(s.RTrigger) >= 0xff {
+	if triggerRawToByte(s.RTrigger) == 0xff {
 		b[8] |= buttonByte8R2
 	}
 

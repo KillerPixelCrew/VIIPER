@@ -8,11 +8,11 @@ import (
 	"time"
 
 	viiperTesting "github.com/Alia5/VIIPER/_testing"
-	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device/steamcontroller"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
 	"github.com/Alia5/VIIPER/usbip"
+	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/virtualbus"
 	"github.com/stretchr/testify/assert"
 
@@ -539,14 +539,14 @@ func TestAPIStreamAndUSBInput(t *testing.T) {
 		t.Fatalf("Failed to start API server: %v", err)
 	}
 
-	b, err := virtualbus.NewWithBusId(1)
+	b, err := virtualbus.NewWithBusID(1)
 	if err != nil {
 		t.Fatalf("Failed to create virtual bus: %v", err)
 	}
 	defer b.Close()
 	_ = s.UsbServer.AddBus(b)
 
-	client := apiclient.New(s.ApiServer.Addr())
+	client := viiperclient.New(s.ApiServer.Addr())
 	stream, _, err := client.AddDeviceAndConnect(context.Background(), b.BusID(), "steamcontroller", nil)
 	if !assert.NoError(t, err) {
 		return

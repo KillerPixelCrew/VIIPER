@@ -43,7 +43,7 @@ func generateTypes(logger *slog.Logger, typesDir string, md *meta.Metadata) erro
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	data := struct{ DTOs interface{} }{DTOs: md.DTOs}
 	if err := tmpl.Execute(f, data); err != nil {
 		return fmt.Errorf("execute template: %w", err)
@@ -58,9 +58,8 @@ func fieldTypeToTS(field interface{}) string {
 	typeKind := v.FieldByName("TypeKind").String()
 
 	if typeKind == "map" || strings.HasPrefix(typeStr, "map[") {
-		k, val, ok := parseGoMapType(typeStr)
+		val, ok := parseGoMapType(typeStr)
 		if ok {
-			_ = k
 			return "Record<string, " + goTypeToTS(val) + ">"
 		}
 		return "Record<string, unknown>"

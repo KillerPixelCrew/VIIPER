@@ -40,6 +40,8 @@ var firmwareDefaultSettings = map[uint8]uint16{
 }
 
 // Steam programs a smaller runtime delta after loading defaults.
+//
+//nolint:unused // records what Steam programs; the device answers from its defaults
 var steamRuntimeSettings = map[uint8]uint16{
 	SettingLeftTrackpadMode:    TrackpadModeNone,
 	SettingRightTrackpadMode:   TrackpadModeNone,
@@ -61,7 +63,7 @@ const (
 )
 
 type SteamController struct {
-	gate           *device.InputGate
+	gate                *device.InputGate
 	inputState          *InputState
 	stateMu             sync.Mutex
 	featureMu           sync.Mutex
@@ -129,17 +131,17 @@ func newControllerState() controllerState {
 
 func New(o *device.CreateOptions) (*SteamController, error) {
 	d := &SteamController{
-		gate: device.NewInputGate(),
+		gate:       device.NewInputGate(),
 		descriptor: defaultDescriptor,
 		inputState: &InputState{},
 		controller: newControllerState(),
 	}
 	if o != nil {
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
 	}
 	return d, nil
@@ -562,7 +564,7 @@ func (d *SteamController) GetDeviceSpecificArgs() map[string]any {
 	return map[string]any{}
 }
 
-var reportDescriptor = hid.Report{
+var reportDescriptor = hid.ReportDescriptor{
 	Items: []hid.Item{
 		hid.UsagePage{Page: 0xff00},
 		hid.Usage{Usage: 0x01},
@@ -583,7 +585,7 @@ var reportDescriptor = hid.Report{
 	},
 }
 
-var mouseReportDescriptor = hid.Report{
+var mouseReportDescriptor = hid.ReportDescriptor{
 	Items: []hid.Item{
 		hid.UsagePage{Page: hid.UsagePageGenericDesktop},
 		hid.Usage{Usage: hid.UsageMouse},
@@ -615,7 +617,7 @@ var mouseReportDescriptor = hid.Report{
 	},
 }
 
-var keyboardReportDescriptor = hid.Report{
+var keyboardReportDescriptor = hid.ReportDescriptor{
 	Items: []hid.Item{
 		hid.UsagePage{Page: hid.UsagePageGenericDesktop},
 		hid.Usage{Usage: hid.UsageKeyboard},
@@ -653,14 +655,14 @@ var keyboardReportDescriptor = hid.Report{
 	},
 }
 
-func makeHIDFunction(report hid.Report) *usb.HIDFunction {
+func makeHIDFunction(report hid.ReportDescriptor) *usb.HIDFunction {
 	return &usb.HIDFunction{
 		Descriptor: usb.HIDDescriptor{
 			BcdHID:       0x0111,
 			BCountryCode: 0x00,
 			Descriptors:  []usb.HIDSubDescriptor{{Type: usb.ReportDescType}},
 		},
-		Report: report,
+		ReportDescriptor: report,
 	}
 }
 
@@ -680,7 +682,7 @@ var defaultDescriptor = usb.Descriptor{
 		BNumConfigurations: 0x01,
 		Speed:              2,
 	},
-	Config: usb.ConfigHeader{
+	Configuration: usb.ConfigurationDescriptor{
 		BConfigurationValue: 0x01,
 		BMAttributes:        0xa0,
 		BMaxPower:           250,

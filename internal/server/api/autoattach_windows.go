@@ -27,18 +27,18 @@ var (
 )
 
 const (
-	DIGCF_PRESENT         = 0x00000002
-	DIGCF_DEVICEINTERFACE = 0x00000010
+	DigcfPresent         = 0x00000002
+	DigcfDeviceInterface = 0x00000010
 )
 
-type SP_DEVICE_INTERFACE_DATA struct {
+type SpDeviceInterfaceData struct {
 	CbSize             uint32
-	InterfaceClassGuid windows.GUID
+	InterfaceClassGUID windows.GUID
 	Flags              uint32
 	Reserved           uintptr
 }
 
-type SP_DEVICE_INTERFACE_DETAIL_DATA struct {
+type SpDeviceInterfaceDetailData struct {
 	CbSize     uint32
 	DevicePath [1]uint16
 }
@@ -58,29 +58,59 @@ const (
 	serialBufSz = 16
 )
 
-// PLUGIN_HARDWARE structure from usbip-win2.
+// PLUGIN_HARDWARE structure from usbip-win2 0.9.8.0 and later.
 //
-// The driver validates Size against its own sizeof(plugin_hardware) and rejects a mismatch with
-// ERROR_INSUFFICIENT_BUFFER, so this structure is version-specific. 0.9.7.8 appended a serial
-// field, which makes the two layouts 1100 and 1116 bytes. Both are declared here and tried in turn
-// rather than probing the installed version: the driver's own rejection is the authority on which
-// one it wants, and it is unambiguous.
+// In C++ it is `struct plugin_hardware : base, imported_device_location` plus trailing fields, so
+// the imported_device_location base is padded to 1096 bytes on its own before the serial starts.
+// The explicit padding here reproduces that layout; flattening the fields would put Serial and
+// WskEvents 3 bytes early.
+//
+// The driver validates Size against its own sizeof(plugin_hardware) and rejects a mismatch before
+// acting, so this structure is version-specific:
+//
+//   - 0.9.7.7 and earlier: 1100 bytes, ending after the padded location.
+//   - 0.9.7.8: 1116 bytes, adding Serial.
+//   - 0.9.8.0: 1120 bytes, adding WskEvents (the low-latency receive mode).
+//
+// All three are tried in turn, newest first, rather than probing the installed version: the
+// driver's own rejection is the authority on which one it wants, and it is unambiguous.
 type attachIOCTL struct {
 	Size       uint32
 	PortOutput int32
 	BusID      [32]byte
 	Service    [niMaxServ]byte
 	Host       [niMaxHost]byte
+	_          [3]byte
 	Serial     [serialBufSz]byte
+	// WskEvents selects the driver's WSK event-callback receive path, which usbip-win2 recommends
+	// for devices that send small reports at a high rate, as every controller here does.
+	WskEvents bool
+	_         [3]byte
 }
 
-// Sizes of the two known plugin_hardware layouts, newest first.
-//
-// The legacy size deliberately is not unsafe.Offsetof(Serial) alone: the structure is 4-aligned, so
-// the pre-0.9.7.8 layout ends on a padded boundary the raw offset would not give.
-var attachIOCTLSizes = [2]uint32{
+// The layout must match the driver byte for byte; these fail to compile if it drifts.
+var (
+	_ [unsafe.Sizeof(attachIOCTL{}) - 1120]struct{}
+	_ [1120 - unsafe.Sizeof(attachIOCTL{})]struct{}
+	_ [unsafe.Offsetof(attachIOCTL{}.Serial) - 1100]struct{}
+	_ [1100 - unsafe.Offsetof(attachIOCTL{}.Serial)]struct{}
+	_ [unsafe.Offsetof(attachIOCTL{}.WskEvents) - 1116]struct{}
+	_ [1116 - unsafe.Offsetof(attachIOCTL{}.WskEvents)]struct{}
+)
+
+// Sizes of the known plugin_hardware layouts, newest first. An older driver reads only the prefix
+// its size covers, so one buffer serves all three.
+var attachIOCTLSizes = [3]uint32{
 	uint32(unsafe.Sizeof(attachIOCTL{})),
-	(uint32(unsafe.Offsetof(attachIOCTL{}.Serial)) + 3) &^ 3,
+	uint32(unsafe.Offsetof(attachIOCTL{}.WskEvents)),
+	uint32(unsafe.Offsetof(attachIOCTL{}.Serial)),
+}
+
+// isLayoutRejection reports whether err is the driver refusing the plugin_hardware size. 0.9.7.x
+// answers ERROR_INSUFFICIENT_BUFFER; 0.9.8.0 answers STATUS_INVALID_BUFFER_SIZE, which reaches
+// user mode as ERROR_INVALID_USER_BUFFER. Both are returned before the driver does anything.
+func isLayoutRejection(err error) bool {
+	return errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) || errors.Is(err, windows.ERROR_INVALID_USER_BUFFER)
 }
 
 const (
@@ -106,16 +136,16 @@ func attachLocalhostClientImpl(ctx context.Context, deviceExportMeta *usbip.Expo
 
 func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, logger *slog.Logger) (int, error) {
 	logger.Info("Auto-attaching localhost client via native IOCTL",
-		"busID", deviceExportMeta.BusId,
-		"deviceID", deviceExportMeta.DevId)
+		"busID", deviceExportMeta.BusID,
+		"deviceID", deviceExportMeta.DevID)
 
 	if usbipServerPort == 0 {
-		return 0, fmt.Errorf("ArgumentValidation: invalid TCP port number (0)")
+		return 0, fmt.Errorf("argumentValidation: invalid TCP port number (0)")
 	}
 
 	devicePath, err := getDeviceInterfacePath(&deviceGUID)
 	if err != nil {
-		return 0, fmt.Errorf("Discovery: %w", err)
+		return 0, fmt.Errorf("discovery: %w", err)
 	}
 
 	logger.Debug("Found usbip-win2 device", "path", devicePath)
@@ -123,23 +153,24 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 	// Heap-allocated on purpose: with overlapped I/O the driver may still write into it after
 	// this function returns, and a goroutine stack can move.
 	ioctlData := new(attachIOCTL)
+	ioctlData.WskEvents = true
 
-	busID := fmt.Sprintf("%d-%d", deviceExportMeta.BusId, deviceExportMeta.DevId)
+	busID := fmt.Sprintf("%d-%d", deviceExportMeta.BusID, deviceExportMeta.DevID)
 	if len(busID) >= len(ioctlData.BusID) {
-		return 0, fmt.Errorf("ArgumentValidation: bus ID too long: %s", busID)
+		return 0, fmt.Errorf("argumentValidation: bus ID too long: %s", busID)
 	}
 	copy(ioctlData.BusID[:], busID)
 
 	service := fmt.Sprintf("%d", usbipServerPort)
 	if len(service) >= len(ioctlData.Service) {
-		return 0, fmt.Errorf("ArgumentValidation: service string too long: %s", service)
+		return 0, fmt.Errorf("argumentValidation: service string too long: %s", service)
 	}
 	copy(ioctlData.Service[:], service)
 	copy(ioctlData.Host[:], "localhost")
 
 	devicePathUTF16, err := windows.UTF16PtrFromString(devicePath)
 	if err != nil {
-		return 0, fmt.Errorf("Open: failed to convert device path: %w", err)
+		return 0, fmt.Errorf("open: failed to convert device path: %w", err)
 	}
 
 	// Overlapped, so the request honors ctx: a synchronous DeviceIoControl cannot be interrupted
@@ -154,17 +185,17 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 		0,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("Open: failed to open usbip-win2 device: %w", err)
+		return 0, fmt.Errorf("open: failed to open usbip-win2 device: %w", err)
 	}
-	defer windows.CloseHandle(handle)
+	defer windows.CloseHandle(handle) //nolint:errcheck // cleanup; nothing to do on failure
 
 	logger.Debug("Opened device handle")
 
-	// Try each known plugin_hardware layout, newest first. A driver that expects the other one
-	// rejects this cleanly and specifically with ERROR_INSUFFICIENT_BUFFER before doing anything,
-	// so retrying is safe: it is a size negotiation, not a repeated attach attempt. Any other
-	// failure is a real one and stops here rather than being retried against a layout the driver
-	// has already shown it does not want.
+	// Try each known plugin_hardware layout, newest first. A driver that expects another one
+	// rejects this cleanly and specifically before doing anything (see isLayoutRejection), so
+	// retrying is safe: it is a size negotiation, not a repeated attach attempt. Any other failure
+	// is a real one and stops here rather than being retried against a layout the driver has
+	// already shown it does not want.
 	var bytesReturned uint32
 	for index, size := range attachIOCTLSizes {
 		ioctlData.Size = size
@@ -177,11 +208,11 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 			return 0, err
 		}
 
-		if !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) || index == len(attachIOCTLSizes)-1 {
+		if !isLayoutRejection(err) || index == len(attachIOCTLSizes)-1 {
 			return 0, fmt.Errorf("IOControl: DeviceIoControl failed (plugin_hardware size %d): %w", size, err)
 		}
 
-		logger.Debug("Driver rejected the plugin_hardware layout; trying the other one", "size", size)
+		logger.Debug("Driver rejected the plugin_hardware layout; trying an older one", "size", size)
 	}
 
 	logger.Debug("IOCTL completed", "bytesReturned", bytesReturned, "portOutput", ioctlData.PortOutput)
@@ -189,12 +220,12 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 	if ioctlData.PortOutput <= 0 {
 		// The driver accepted the request, so the device may be plugged in without a port
 		// this side can detach by.
-		return 0, fmt.Errorf("%w: ResponseValidation: invalid USB port returned: %d", ErrAttachUncertain, ioctlData.PortOutput)
+		return 0, fmt.Errorf("%w: responseValidation: invalid USB port returned: %d", ErrAttachUncertain, ioctlData.PortOutput)
 	}
 
 	logger.Info("Successfully attached device via IOCTL",
-		"busID", deviceExportMeta.BusId,
-		"deviceID", deviceExportMeta.DevId,
+		"busID", deviceExportMeta.BusID,
+		"deviceID", deviceExportMeta.DevID,
 		"usbPort", ioctlData.PortOutput)
 
 	return int(ioctlData.PortOutput), nil
@@ -235,7 +266,7 @@ func pluginHardware(ctx context.Context, handle windows.Handle, data *attachIOCT
 		overlapped,
 	)
 	if !errors.Is(err, windows.ERROR_IO_PENDING) {
-		windows.CloseHandle(event)
+		windows.CloseHandle(event) //nolint:errcheck // cleanup; nothing to do on failure
 		return returned, err
 	}
 
@@ -250,7 +281,7 @@ func pluginHardware(ctx context.Context, handle windows.Handle, data *attachIOCT
 		}
 	}
 	err = windows.GetOverlappedResult(handle, overlapped, &returned, false)
-	windows.CloseHandle(event)
+	windows.CloseHandle(event) //nolint:errcheck // cleanup; nothing to do on failure
 	if !completed && err != nil {
 		return 0, fmt.Errorf("%w: IOControl: plugin_hardware cancelled: %v (%v)", ErrAttachUncertain, ctx.Err(), err)
 	}
@@ -270,7 +301,7 @@ func waitEvent(ctx context.Context, event windows.Handle) bool {
 }
 
 func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usbipServerPort uint16, logger *slog.Logger) (int, error) {
-	logger.Info("Auto-attaching localhost client", "busID", deviceExportMeta.BusId, "deviceID", deviceExportMeta.DevId)
+	logger.Info("Auto-attaching localhost client", "busID", deviceExportMeta.BusID, "deviceID", deviceExportMeta.DevID)
 
 	cmd := exec.CommandContext(
 		ctx,
@@ -279,7 +310,7 @@ func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, u
 		strconv.FormatUint(uint64(usbipServerPort), 10),
 		"attach",
 		"-r", "localhost",
-		"-b", fmt.Sprintf("%d-%d", deviceExportMeta.BusId, deviceExportMeta.DevId),
+		"-b", fmt.Sprintf("%d-%d", deviceExportMeta.BusID, deviceExportMeta.DevID),
 		"-t",
 	)
 	output, err := cmd.CombinedOutput()
@@ -323,7 +354,7 @@ func detachViaIOCTL(port int, logger *slog.Logger) error {
 
 	devicePathUTF16, err := windows.UTF16PtrFromString(devicePath)
 	if err != nil {
-		return fmt.Errorf("Open: failed to convert device path: %w", err)
+		return fmt.Errorf("open: failed to convert device path: %w", err)
 	}
 
 	handle, err := windows.CreateFile(
@@ -336,9 +367,9 @@ func detachViaIOCTL(port int, logger *slog.Logger) error {
 		0,
 	)
 	if err != nil {
-		return fmt.Errorf("Open: failed to open usbip-win2 device: %w", err)
+		return fmt.Errorf("open: failed to open usbip-win2 device: %w", err)
 	}
-	defer windows.CloseHandle(handle)
+	defer windows.CloseHandle(handle) //nolint:errcheck // cleanup; nothing to do on failure
 
 	data := plugoutHardware{Size: uint32(unsafe.Sizeof(plugoutHardware{})), Port: int32(port)}
 	var bytesReturned uint32
@@ -364,20 +395,20 @@ func getDeviceInterfacePath(guid *windows.GUID) (string, error) {
 		uintptr(unsafe.Pointer(guid)),
 		0,
 		0,
-		uintptr(DIGCF_PRESENT|DIGCF_DEVICEINTERFACE))
+		uintptr(DigcfPresent|DigcfDeviceInterface))
 
 	devInfo := windows.Handle(r0)
 	if devInfo == windows.InvalidHandle {
 		if e1 != 0 {
-			return "", fmt.Errorf("Discovery: SetupDiGetClassDevsW failed: %w", e1)
+			return "", fmt.Errorf("discovery: SetupDiGetClassDevsW failed: %w", e1)
 		}
-		return "", fmt.Errorf("Discovery: SetupDiGetClassDevsW failed with invalid handle")
+		return "", fmt.Errorf("discovery: SetupDiGetClassDevsW failed with invalid handle")
 	}
 	defer func() {
-		syscall.SyscallN(procSetupDiDestroyDeviceInfoList.Addr(), uintptr(devInfo))
+		syscall.SyscallN(procSetupDiDestroyDeviceInfoList.Addr(), uintptr(devInfo)) //nolint:errcheck // cleanup; nothing to do on failure
 	}()
 
-	var interfaceData SP_DEVICE_INTERFACE_DATA
+	var interfaceData SpDeviceInterfaceData
 	interfaceData.CbSize = uint32(unsafe.Sizeof(interfaceData))
 
 	r1, _, e2 := syscall.SyscallN(procSetupDiEnumDeviceInterfaces.Addr(),
@@ -389,9 +420,9 @@ func getDeviceInterfacePath(guid *windows.GUID) (string, error) {
 
 	if r1 == 0 {
 		if e2 != 0 {
-			return "", fmt.Errorf("Discovery: usbip-win2 driver not found: %w", e2)
+			return "", fmt.Errorf("discovery: usbip-win2 driver not found: %w", e2)
 		}
-		return "", fmt.Errorf("Discovery: usbip-win2 driver not found")
+		return "", fmt.Errorf("discovery: usbip-win2 driver not found")
 	}
 
 	var requiredSize uint32
@@ -408,15 +439,15 @@ func getDeviceInterfacePath(guid *windows.GUID) (string, error) {
 	// written, and indexing a zero-length slice below would panic instead of
 	// reporting why discovery failed.
 	if rSize == 0 && eSize != windows.ERROR_INSUFFICIENT_BUFFER {
-		return "", fmt.Errorf("Discovery: SetupDiGetDeviceInterfaceDetailW (size query) failed: %w", eSize)
+		return "", fmt.Errorf("discovery: SetupDiGetDeviceInterfaceDetailW (size query) failed: %w", eSize)
 	}
 	if requiredSize == 0 {
-		return "", fmt.Errorf("Discovery: SetupDiGetDeviceInterfaceDetailW (size query) returned no size")
+		return "", fmt.Errorf("discovery: SetupDiGetDeviceInterfaceDetailW (size query) returned no size")
 	}
 
 	detailData := make([]byte, requiredSize)
-	detailHeader := (*SP_DEVICE_INTERFACE_DETAIL_DATA)(unsafe.Pointer(&detailData[0]))
-	detailHeader.CbSize = uint32(unsafe.Sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA{}))
+	detailHeader := (*SpDeviceInterfaceDetailData)(unsafe.Pointer(&detailData[0]))
+	detailHeader.CbSize = uint32(unsafe.Sizeof(SpDeviceInterfaceDetailData{}))
 
 	r2, _, e3 := syscall.SyscallN(procSetupDiGetDeviceInterfaceDetailW.Addr(),
 		uintptr(devInfo),
@@ -428,9 +459,9 @@ func getDeviceInterfacePath(guid *windows.GUID) (string, error) {
 
 	if r2 == 0 {
 		if e3 != 0 {
-			return "", fmt.Errorf("Discovery: SetupDiGetDeviceInterfaceDetailW failed: %w", e3)
+			return "", fmt.Errorf("discovery: SetupDiGetDeviceInterfaceDetailW failed: %w", e3)
 		}
-		return "", fmt.Errorf("Discovery: SetupDiGetDeviceInterfaceDetailW failed")
+		return "", fmt.Errorf("discovery: SetupDiGetDeviceInterfaceDetailW failed")
 	}
 
 	path := windows.UTF16PtrToString(&detailHeader.DevicePath[0])

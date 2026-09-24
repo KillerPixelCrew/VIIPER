@@ -18,11 +18,6 @@ func triggerU8ToU10(v uint8) uint16 {
 	return uint16((uint32(v)*1023 + 127) / 255)
 }
 
-// triggerU8ToU16 scales trigger range 0..255 to 0..65535.
-func triggerU8ToU16(v uint8) uint16 {
-	return uint16((uint32(v)*65535 + 127) / 255)
-}
-
 // rumblePercentToU8 converts 0..100 force-feedback magnitudes to 0..255.
 // Values above 100 are passed through to handle non-standard stacks.
 func rumblePercentToU8(v uint8) uint8 {

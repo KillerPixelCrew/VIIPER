@@ -176,10 +176,10 @@ func CreateKeyboardDevice(
 
 	opts := &device.CreateOptions{}
 	if idVendor != 0 {
-		opts.IdVendor = &idVendor
+		opts.IDVendor = &idVendor
 	}
 	if idProduct != 0 {
-		opts.IdProduct = &idProduct
+		opts.IDProduct = &idProduct
 	}
 
 	d, err := keyboard.New(opts)
@@ -192,6 +192,7 @@ func CreateKeyboardDevice(
 	}
 	exportMeta := device.GetDeviceMeta(devCtx)
 	if exportMeta == nil {
+		_ = bus.Remove(d)
 		return false
 	}
 
@@ -205,6 +206,8 @@ func CreateKeyboardDevice(
 		)
 		if err != nil {
 			slog.Error("failed to auto-attach localhost client", "error", err)
+			// No handle is returned, so the caller could never remove it.
+			_ = bus.Remove(d)
 			return false
 		}
 	}
@@ -298,12 +301,12 @@ func RemoveKeyboardDevice(handle C.KeyboardDeviceHandle) bool {
 	if !ok {
 		return false
 	}
-	if err := dhw.usbServer.s.RemoveDeviceByID(dhw.exportMeta.BusId, fmt.Sprintf("%d", dhw.exportMeta.DevId)); err != nil {
+	if err := dhw.usbServer.s.RemoveDeviceByID(dhw.exportMeta.BusID, fmt.Sprintf("%d", dhw.exportMeta.DevID)); err != nil {
 		return false
 	}
 
 	shw := dhw.usbServer
-	busID := dhw.exportMeta.BusId
+	busID := dhw.exportMeta.BusID
 
 	shw.mtx.Lock()
 	defer shw.mtx.Unlock()

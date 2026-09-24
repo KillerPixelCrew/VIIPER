@@ -56,6 +56,14 @@ typedef struct {
 	int16_t  AccelZ;
 } DS4DeviceState;
 
+typedef struct {
+	const char* SerialNumber;       // NULL = use default
+	const char* Board;              // NULL = use default
+	uint8_t     BatteryStatus;      // 0 = use default
+	double      TemperatureCelsius; // 0 = use default
+	double      BatteryVoltage;     // 0 = use default
+} DS4MetaState;
+
 typedef void (*DS4OutputCallback)(DS4DeviceHandle handle, uint8_t rumbleSmall, uint8_t rumbleLarge, uint8_t ledRed, uint8_t ledGreen, uint8_t ledBlue, uint8_t flashOn, uint8_t flashOff);
 
 static void viiper_call_ds4_output(DS4OutputCallback fn, DS4DeviceHandle handle, uint8_t rumbleSmall, uint8_t rumbleLarge, uint8_t ledRed, uint8_t ledGreen, uint8_t ledBlue, uint8_t flashOn, uint8_t flashOff) {
@@ -66,6 +74,7 @@ static void viiper_call_ds4_output(DS4OutputCallback fn, DS4DeviceHandle handle,
 import "C"
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"runtime/cgo"
@@ -83,6 +92,7 @@ import (
 // @param autoAttachLocalhost If true, the device will be automatically attached to a USBIP-Client/Driver running on THIS machine.
 // @param idVendor Optional USB vendor ID (0 = default).
 // @param idProduct Optional USB product ID (0 = default).
+// @param meta Optional pointer to initial device metadata. Pass NULL to use defaults.
 //
 //export CreateDS4Device
 func CreateDS4Device(
@@ -92,6 +102,7 @@ func CreateDS4Device(
 	autoAttachLocalhost bool,
 	idVendor uint16,
 	idProduct uint16,
+	meta *C.DS4MetaState,
 ) bool {
 	sh := cgo.Handle(serverHandle)
 	shw, ok := sh.Value().(*usbServerHandleWrapper)
@@ -105,10 +116,24 @@ func CreateDS4Device(
 
 	opts := &device.CreateOptions{}
 	if idVendor != 0 {
-		opts.IdVendor = &idVendor
+		opts.IDVendor = &idVendor
 	}
 	if idProduct != 0 {
-		opts.IdProduct = &idProduct
+		opts.IDProduct = &idProduct
+	}
+	if meta != nil {
+		goMeta := dualshock4.MetaState{
+			SerialNumber:       goStringOrEmpty(meta.SerialNumber),
+			Board:              goStringOrEmpty(meta.Board),
+			BatteryStatus:      uint8(meta.BatteryStatus),
+			TemperatureCelsius: float64(meta.TemperatureCelsius),
+			BatteryVoltage:     float64(meta.BatteryVoltage),
+		}
+		b, err := json.Marshal(goMeta)
+		if err != nil {
+			return false
+		}
+		opts.DeviceSpecific = string(b)
 	}
 
 	d, err := dualshock4.New(opts)
@@ -121,6 +146,7 @@ func CreateDS4Device(
 	}
 	exportMeta := device.GetDeviceMeta(devCtx)
 	if exportMeta == nil {
+		_ = bus.Remove(d)
 		return false
 	}
 
@@ -134,6 +160,8 @@ func CreateDS4Device(
 		)
 		if err != nil {
 			slog.Error("failed to auto-attach localhost client", "error", err)
+			// No handle is returned, so the caller could never remove it.
+			_ = bus.Remove(d)
 			return false
 		}
 	}
@@ -235,12 +263,12 @@ func RemoveDS4Device(handle C.DS4DeviceHandle) bool {
 	if !ok {
 		return false
 	}
-	if err := dhw.usbServer.s.RemoveDeviceByID(dhw.exportMeta.BusId, fmt.Sprintf("%d", dhw.exportMeta.DevId)); err != nil {
+	if err := dhw.usbServer.s.RemoveDeviceByID(dhw.exportMeta.BusID, fmt.Sprintf("%d", dhw.exportMeta.DevID)); err != nil {
 		return false
 	}
 
 	shw := dhw.usbServer
-	busID := dhw.exportMeta.BusId
+	busID := dhw.exportMeta.BusID
 
 	shw.mtx.Lock()
 	defer shw.mtx.Unlock()

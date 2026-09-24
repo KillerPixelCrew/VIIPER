@@ -31,12 +31,12 @@ const (
 
 // GIP device power states (payload of SetState command 0x05).
 const (
-	GIPStateStart    = 0x00 // Transition to Active
-	GIPStateStop     = 0x01 // Transition to Idle
-	GIPStateFullPwr  = 0x03 // Reset idle timer (wireless)
-	GIPStateOff      = 0x04 // Power off
-	GIPStateQuiesce  = 0x05 // Clear motors (Guide pressed)
-	GIPStateReset    = 0x07 // Full device reset
+	GIPStateStart   = 0x00 // Transition to Active
+	GIPStateStop    = 0x01 // Transition to Idle
+	GIPStateFullPwr = 0x03 // Reset idle timer (wireless)
+	GIPStateOff     = 0x04 // Power off
+	GIPStateQuiesce = 0x05 // Clear motors (Guide pressed)
+	GIPStateReset   = 0x07 // Full device reset
 )
 
 // GIP protocol state machine.

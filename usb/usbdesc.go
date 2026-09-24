@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"unicode/utf16"
 
 	"github.com/Alia5/VIIPER/usb/hid"
 )
@@ -15,6 +16,7 @@ const (
 	ConfigDescType    = 0x02
 	InterfaceDescType = 0x04
 	EndpointDescType  = 0x05
+	IADDescType       = 0x0B
 	HIDDescType       = 0x21
 	ReportDescType    = 0x22
 )
@@ -23,6 +25,7 @@ const (
 const (
 	DeviceDescLen    = 18
 	ConfigDescLen    = 9
+	IADDescLen       = 8
 	InterfaceDescLen = 9
 	EndpointDescLen  = 7
 	HIDDescLen       = 9
@@ -32,81 +35,25 @@ type Data []uint8
 
 // Descriptor holds all static descriptor/config data for a device.
 type Descriptor struct {
-	Device DeviceDescriptor
-	// Config is the original (full) configuration-descriptor header used by
-	// existing devices (xbox360, dualshock4, switchpro, ...). For new
-	// devices ported from forks that use a slimmer Configuration shape (see
-	// ConfigurationDescriptor below — only the non-derived fields), the
-	// server.go config-bytes builder prefers Configuration when it is set
-	// and falls back to Config otherwise. Devices should set exactly one.
-	Config        ConfigHeader
-	Configuration *ConfigurationDescriptor
-	// MicrosoftOS10, when non-nil, causes the server to respond to a
-	// GET_DESCRIPTOR for STRING index 0xEE with the MS OS 1.0 probe string,
-	// signalling Windows that the device supports the Microsoft OS
-	// descriptor protocol. Used by the Switch 2 Pro Controller backend so
-	// the bulk vendor-specific interface gets WinUSB-class probing. The
-	// follow-on Compatible-ID / Extended-Properties vendor request handling
-	// isn't wired yet — the HID interface still binds the standard HID
-	// class driver, which is sufficient for game input.
+	Device        DeviceDescriptor
+	Configuration ConfigurationDescriptor
 	MicrosoftOS10 *MicrosoftOS10Descriptor
+	Associations  []InterfaceAssociationDescriptor
 	Interfaces    []InterfaceConfig
 	Strings       map[uint8]string
 }
 
-// NumInterfaces returns the count of distinct interface numbers across the
-// active configuration. Alternate settings share an interface number and only
-// count once — the USB configuration descriptor header reflects the cardinal
-// interface count, not the descriptor array length.
-func (d Descriptor) NumInterfaces() uint8 {
-	seen := map[uint8]struct{}{}
-	for _, iface := range d.Interfaces {
-		seen[iface.Descriptor.BInterfaceNumber] = struct{}{}
-	}
-	return uint8(len(seen))
-}
-
-// ConfigurationDescriptor holds the non-derived fields from the USB
-// configuration descriptor — the fields a device wants to control. Total
-// length and interface count are computed by the server when the wire bytes
-// are emitted. Zero values cause the server to fall back to its built-in
-// defaults (BConfigurationValue=1, BMAttributes=bus-powered, BMaxPower=100mA).
-//
-// This is an alternative to Config (ConfigHeader) for devices that want to
-// stay focused on non-derived fields. server.go prefers Configuration when
-// it is non-nil; otherwise it falls back to Config.
-type ConfigurationDescriptor struct {
-	BConfigurationValue uint8
-	IConfiguration      uint8
-	BMAttributes        uint8
-	BMaxPower           uint8
-}
-
-// MicrosoftOS10Descriptor enables the Microsoft OS 1.0 descriptor probe
-// used by Windows to bind vendor-specific interfaces to inbox drivers such
-// as WinUSB. The probe sequence is: the host issues a GET_DESCRIPTOR for
-// STRING index 0xEE; the device returns this fixed-format 18-byte response
-// with a vendor-specific code. Windows then sends class-specific vendor
-// control requests using that code to fetch the Compatible-ID descriptor.
-//
-// NOTE: server.go currently answers ONLY the 0xEE string probe — the
-// Compatible-ID and Extended-Properties follow-up requests are not wired
-// yet. Windows therefore sees "device claims MS OS support" but does not
-// auto-bind WinUSB to the bulk interface. The HID interface still binds
-// normally so the gamepad input path works end-to-end.
+// MicrosoftOS10Descriptor enables the Microsoft OS 1.0 descriptor probe used by
+// Windows to bind vendor-specific interfaces to inbox drivers such as WinUSB.
 type MicrosoftOS10Descriptor struct {
-	VendorCode uint8
+	VendorCode          uint8
+	InterfaceNumber     uint8
+	CompatibleID        string
+	SubCompatibleID     string
+	DeviceInterfaceGUID string
 }
 
-// StringDescriptor returns the 18-byte fixed response the device emits when
-// the host probes STRING index 0xEE. The leading "MSFT100" magic identifies
-// the MS OS 1.0 protocol; the trailing vendor code is what the host echoes
-// back in the bRequest field of follow-up vendor requests.
 func (d MicrosoftOS10Descriptor) StringDescriptor() []byte {
-	vendorCode := d.VendorCode
-	if vendorCode == 0 {
-		vendorCode = 0x20
-	}
 	return []byte{
 		0x12, 0x03,
 		'M', 0x00,
@@ -116,8 +63,119 @@ func (d MicrosoftOS10Descriptor) StringDescriptor() []byte {
 		'1', 0x00,
 		'0', 0x00,
 		'0', 0x00,
-		vendorCode, 0x00,
+		d.EffectiveVendorCode(), 0x00,
 	}
+}
+
+func (d MicrosoftOS10Descriptor) EffectiveVendorCode() uint8 {
+	if d.VendorCode == 0 {
+		return 0x20
+	}
+	return d.VendorCode
+}
+
+func (d MicrosoftOS10Descriptor) ControlResponse(wValue, wIndex uint16) ([]byte, bool) {
+	switch {
+	case wIndex == 0x0004:
+		return d.CompatibleIDDescriptor(), true
+	case wIndex == 0x0005 || wValue == 0x0005:
+		return d.ExtendedPropertiesDescriptor(), true
+	default:
+		return nil, false
+	}
+}
+
+func (d MicrosoftOS10Descriptor) CompatibleIDDescriptor() []byte {
+	out := make([]byte, 40)
+	binary.LittleEndian.PutUint32(out[0:4], uint32(len(out)))
+	binary.LittleEndian.PutUint16(out[4:6], 0x0100)
+	binary.LittleEndian.PutUint16(out[6:8], 0x0004)
+	out[8] = 0x01
+	out[16] = d.InterfaceNumber
+	copyFixedASCII(out[18:26], d.CompatibleID)
+	copyFixedASCII(out[26:34], d.SubCompatibleID)
+	return out
+}
+
+func (d MicrosoftOS10Descriptor) ExtendedPropertiesDescriptor() []byte {
+	if d.DeviceInterfaceGUID == "" {
+		out := make([]byte, 10)
+		binary.LittleEndian.PutUint32(out[0:4], uint32(len(out)))
+		binary.LittleEndian.PutUint16(out[4:6], 0x0100)
+		binary.LittleEndian.PutUint16(out[6:8], 0x0005)
+		return out
+	}
+
+	name := utf16leString("DeviceInterfaceGUID")
+	data := utf16leString(d.DeviceInterfaceGUID)
+
+	sectionLen := 4 + 4 + 2 + len(name) + 4 + len(data)
+	out := make([]byte, 10+sectionLen)
+	binary.LittleEndian.PutUint32(out[0:4], uint32(len(out)))
+	binary.LittleEndian.PutUint16(out[4:6], 0x0100)
+	binary.LittleEndian.PutUint16(out[6:8], 0x0005)
+	binary.LittleEndian.PutUint16(out[8:10], 0x0001)
+
+	off := 10
+	binary.LittleEndian.PutUint32(out[off:off+4], uint32(sectionLen))
+	off += 4
+	binary.LittleEndian.PutUint32(out[off:off+4], 0x00000001) // REG_SZ
+	off += 4
+	binary.LittleEndian.PutUint16(out[off:off+2], uint16(len(name)))
+	off += 2
+	copy(out[off:off+len(name)], name)
+	off += len(name)
+	binary.LittleEndian.PutUint32(out[off:off+4], uint32(len(data)))
+	off += 4
+	copy(out[off:], data)
+	return out
+}
+
+func copyFixedASCII(dst []byte, s string) {
+	for i := range dst {
+		dst[i] = 0
+	}
+	copy(dst, []byte(s))
+}
+
+func utf16leString(s string) []byte {
+	units := utf16.Encode([]rune(s + "\x00"))
+	out := make([]byte, len(units)*2)
+	for i, u := range units {
+		binary.LittleEndian.PutUint16(out[i*2:i*2+2], u)
+	}
+	return out
+}
+
+// NumInterfaces returns the number of distinct interface numbers in the active
+// configuration. Alternate settings share the same interface number and only
+// count once in the USB configuration descriptor header.
+func (d Descriptor) NumInterfaces() uint8 {
+	seen := map[uint8]struct{}{}
+	for _, iface := range d.Interfaces {
+		seen[iface.Descriptor.BInterfaceNumber] = struct{}{}
+	}
+	return uint8(len(seen))
+}
+
+// Interface returns the first matching interface descriptor for an interface
+// number, preferring alternate setting zero when available.
+func (d Descriptor) Interface(number uint8) (InterfaceConfig, bool) {
+	var found InterfaceConfig
+	ok := false
+	for _, iface := range d.Interfaces {
+		if iface.Descriptor.BInterfaceNumber != number {
+			continue
+		}
+		if iface.Descriptor.BAlternateSetting == 0 {
+			return iface, true
+		}
+		if !ok {
+			found = iface
+			ok = true
+		}
+	}
+	return found, ok
 }
 
 // InterfaceConfig holds all descriptors for a single interface for bus management.
@@ -205,6 +263,37 @@ type ConfigHeader struct {
 	BMaxPower           uint8
 }
 
+// ConfigurationDescriptor contains the non-derived fields from the USB
+// configuration descriptor. Zero values keep the server defaults.
+type ConfigurationDescriptor struct {
+	BConfigurationValue uint8
+	IConfiguration      uint8
+	BMAttributes        uint8
+	BMaxPower           uint8
+}
+
+// InterfaceAssociationDescriptor describes a USB Interface Association
+// Descriptor (IAD), used by composite devices to group related interfaces.
+type InterfaceAssociationDescriptor struct {
+	BFirstInterface   uint8
+	BInterfaceCount   uint8
+	BFunctionClass    uint8
+	BFunctionSubClass uint8
+	BFunctionProtocol uint8
+	IFunction         uint8
+}
+
+func (i InterfaceAssociationDescriptor) Write(b *bytes.Buffer) {
+	b.WriteByte(IADDescLen)
+	b.WriteByte(IADDescType)
+	b.WriteByte(i.BFirstInterface)
+	b.WriteByte(i.BInterfaceCount)
+	b.WriteByte(i.BFunctionClass)
+	b.WriteByte(i.BFunctionSubClass)
+	b.WriteByte(i.BFunctionProtocol)
+	b.WriteByte(i.IFunction)
+}
+
 func (h ConfigHeader) Write(b *bytes.Buffer) {
 	b.WriteByte(ConfigDescLen)
 	b.WriteByte(ConfigDescType)
@@ -247,6 +336,10 @@ type EndpointDescriptor struct {
 	BMAttributes     uint8
 	WMaxPacketSize   uint16 // LE
 	BInterval        uint8
+
+	// ClassDescriptors are optional endpoint-level class-specific descriptors
+	// emitted immediately after this endpoint descriptor.
+	ClassDescriptors []ClassSpecificDescriptor
 }
 
 func (e EndpointDescriptor) Write(b *bytes.Buffer) {
@@ -323,21 +416,23 @@ func (d ClassSpecificDescriptor) Bytes() Data {
 // HIDFunction bundles the HID class descriptor (0x21) and the report descriptor (0x22)
 // for a HID-class interface.
 type HIDFunction struct {
-	Descriptor HIDDescriptor
-	Report     hid.Report
-	// ReportRaw, if non-nil, overrides Report with pre-encoded descriptor bytes.
-	// Use this when the descriptor is too complex for the structured hid.Report API.
-	ReportRaw []byte
+	Descriptor       HIDDescriptor
+	ReportDescriptor hid.ReportDescriptor
+	// ReportDescriptorBytes, when non-empty, is returned verbatim as the HID report
+	// descriptor (0x22) and used for HID report length calculation. This is useful for
+	// complex, vendor-specific descriptors that are easier to provide as raw bytes.
+	ReportDescriptorBytes Data
 }
 
 func (f HIDFunction) reportLen() (uint16, error) {
-	if f.ReportRaw != nil {
-		if len(f.ReportRaw) > 0xFFFF {
-			return 0, fmt.Errorf("usb: HID report descriptor too large: %d", len(f.ReportRaw))
+	if len(f.ReportDescriptorBytes) > 0 {
+		if len(f.ReportDescriptorBytes) > 0xFFFF {
+			return 0, fmt.Errorf("usb: HID raw report descriptor too large: %d", len(f.ReportDescriptorBytes))
 		}
-		return uint16(len(f.ReportRaw)), nil
+		return uint16(len(f.ReportDescriptorBytes)), nil
 	}
-	rb, err := f.Report.Bytes()
+
+	rb, err := f.ReportDescriptor.Bytes()
 	if err != nil {
 		return 0, err
 	}
@@ -362,10 +457,13 @@ func (f HIDFunction) DescriptorBytes() (Data, error) {
 
 // ReportBytes returns the HID report descriptor (0x22) bytes.
 func (f HIDFunction) ReportBytes() (Data, error) {
-	if f.ReportRaw != nil {
-		return Data(f.ReportRaw), nil
+	if len(f.ReportDescriptorBytes) > 0 {
+		out := make([]uint8, len(f.ReportDescriptorBytes))
+		copy(out, f.ReportDescriptorBytes)
+		return Data(out), nil
 	}
-	rb, err := f.Report.Bytes()
+
+	rb, err := f.ReportDescriptor.Bytes()
 	if err != nil {
 		return nil, err
 	}

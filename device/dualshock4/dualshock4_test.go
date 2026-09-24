@@ -8,11 +8,11 @@ import (
 	"time"
 
 	viiperTesting "github.com/Alia5/VIIPER/_testing"
-	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device/dualshock4"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	"github.com/Alia5/VIIPER/internal/server/api/handler"
 	"github.com/Alia5/VIIPER/usbip"
+	"github.com/Alia5/VIIPER/viiperclient"
 	"github.com/Alia5/VIIPER/virtualbus"
 	"github.com/stretchr/testify/assert"
 
@@ -51,26 +51,19 @@ func TestInputReports(t *testing.T) {
 				AccelY:       0,
 				AccelZ:       0,
 			},
-			expectedReport: []byte{
-				0x01,
-				0x80, 0x80, 0x80, 0x80,
-				0x08,
-				0x00,
-				0x00,
-				0x00, 0x00,
-				0x00, 0x00,
-				0x00,
-				0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00, 0x00,
-				0x0b,
-				0x00, 0x00, 0x00, 0x00,
-				0x80, 0x00, 0x00, 0x00,
-				0x80, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-				0x00,
-			},
+			expectedReport: func() []byte {
+				b := make([]byte, dualshock4.InputReportSize)
+				b[0] = 0x01
+				b[1], b[2], b[3], b[4] = 0x80, 0x80, 0x80, 0x80
+				b[5] = 0x08
+				b[12] = 0x09
+				b[30] = 0x1a
+				b[33] = 0x01
+				b[34] = 0x01
+				b[35] = 0x80
+				b[39] = 0x80
+				return b
+			}(),
 		},
 		{
 			name: "dpad up",
@@ -89,7 +82,10 @@ func TestInputReports(t *testing.T) {
 				b[0] = 0x01
 				b[1], b[2], b[3], b[4] = 0x80, 0x80, 0x80, 0x80
 				b[5] = 0x00
-				b[30] = 0x0b
+				b[12] = 0x09
+				b[30] = 0x1a
+				b[33] = 0x01
+				b[34] = 0x01
 				b[35] = 0x80
 				b[39] = 0x80
 				return b
@@ -102,7 +98,7 @@ func TestInputReports(t *testing.T) {
 				LY:           0,
 				RX:           0,
 				RY:           0,
-				Buttons:      uint16(dualshock4.ButtonSquare),
+				Buttons:      dualshock4.ButtonSquare,
 				DPad:         0,
 				Touch1Active: false,
 				Touch2Active: false,
@@ -112,7 +108,10 @@ func TestInputReports(t *testing.T) {
 				b[0] = 0x01
 				b[1], b[2], b[3], b[4] = 0x80, 0x80, 0x80, 0x80
 				b[5] = 0x18
-				b[30] = 0x0b
+				b[12] = 0x09
+				b[30] = 0x1a
+				b[33] = 0x01
+				b[34] = 0x01
 				b[35] = 0x80
 				b[39] = 0x80
 				return b
@@ -136,7 +135,10 @@ func TestInputReports(t *testing.T) {
 				b[1], b[2], b[3], b[4] = 0x80, 0x80, 0x80, 0x80
 				b[5] = 0x08
 				b[7] = 0x01
-				b[30] = 0x0b
+				b[12] = 0x09
+				b[30] = 0x1a
+				b[33] = 0x01
+				b[34] = 0x01
 				b[35] = 0x80
 				b[39] = 0x80
 				return b
@@ -163,7 +165,10 @@ func TestInputReports(t *testing.T) {
 				b[5] = 0x08
 				b[8] = 0x12
 				b[9] = 0xFE
-				b[30] = 0x0b
+				b[12] = 0x09
+				b[30] = 0x1a
+				b[33] = 0x01
+				b[34] = 0x01
 				b[35] = 0x80
 				b[39] = 0x80
 				return b
@@ -188,7 +193,10 @@ func TestInputReports(t *testing.T) {
 				b[0] = 0x01
 				b[1], b[2], b[3], b[4] = 0x80, 0x80, 0x80, 0x80
 				b[5] = 0x08
-				b[30] = 0x0b
+				b[12] = 0x09
+				b[30] = 0x1a
+				b[33] = 0x01
+				b[34] = 0x01
 				b[35] = 0x00
 				b[36] = 0x7b
 				b[37] = 0x80
@@ -220,13 +228,16 @@ func TestInputReports(t *testing.T) {
 				b[0] = 0x01
 				b[1], b[2], b[3], b[4] = 0x80, 0x80, 0x80, 0x80
 				b[5] = 0x08
+				b[12] = 0x09
 				b[13], b[14] = 0xD2, 0x04
 				b[15], b[16] = 0xD7, 0xF6
 				b[17], b[18] = 0x80, 0x0D
 				b[19], b[20] = 0x91, 0xFF
 				b[21], b[22] = 0xDE, 0x00
 				b[23], b[24] = 0xB3, 0xFE
-				b[30] = 0x0b
+				b[30] = 0x1a
+				b[33] = 0x01
+				b[34] = 0x01
 				b[35] = 0x80
 				b[39] = 0x80
 				return b
@@ -235,8 +246,8 @@ func TestInputReports(t *testing.T) {
 	}
 
 	s := viiperTesting.NewTestServer(t)
-	defer s.UsbServer.Close()
-	defer s.ApiServer.Close()
+	defer s.UsbServer.Close() //nolint:errcheck
+	defer s.ApiServer.Close() //nolint:errcheck
 
 	r := s.ApiServer.Router()
 	r.Register("bus/{id}/add", handler.BusDeviceAdd(s.UsbServer, s.ApiServer))
@@ -246,19 +257,19 @@ func TestInputReports(t *testing.T) {
 		t.Fatalf("Failed to start API server: %v", err)
 	}
 
-	b, err := virtualbus.NewWithBusId(1)
+	b, err := virtualbus.NewWithBusID(1)
 	if err != nil {
 		t.Fatalf("Failed to create virtual bus: %v", err)
 	}
-	defer b.Close()
+	defer b.Close() //nolint:errcheck
 	_ = s.UsbServer.AddBus(b)
 
-	client := apiclient.New(s.ApiServer.Addr())
+	client := viiperclient.New(s.ApiServer.Addr())
 	stream, _, err := client.AddDeviceAndConnect(context.Background(), b.BusID(), "dualshock4", nil)
 	if !assert.NoError(t, err) {
 		return
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	usbipClient := viiperTesting.NewUsbIpClient(t, s.UsbServer.Addr())
 	devs, err := usbipClient.ListDevices()
@@ -273,7 +284,7 @@ func TestInputReports(t *testing.T) {
 		return
 	}
 	if imp != nil && imp.Conn != nil {
-		defer imp.Conn.Close()
+		defer imp.Conn.Close() //nolint:errcheck
 	}
 
 	var seq uint32
@@ -348,7 +359,7 @@ func TestInputReports(t *testing.T) {
 				return
 			}
 			dev.UpdateInputState(&tc.inputState)
-			built := dev.HandleTransfer(gateTestCtx(), 4, usbip.DirIn, nil)
+			built := dev.HandleTransfer(context.Background(), 4, usbip.DirIn, nil)
 			bb := append([]byte(nil), built...)
 			exp := append([]byte(nil), tc.expectedReport...)
 			bb[7] &= 0x03
@@ -412,8 +423,8 @@ func TestFeedback(t *testing.T) {
 	}
 
 	s := viiperTesting.NewTestServer(t)
-	defer s.UsbServer.Close()
-	defer s.ApiServer.Close()
+	defer s.UsbServer.Close() //nolint:errcheck
+	defer s.ApiServer.Close() //nolint:errcheck
 
 	r := s.ApiServer.Router()
 	r.Register("bus/{id}/add", handler.BusDeviceAdd(s.UsbServer, s.ApiServer))
@@ -423,19 +434,19 @@ func TestFeedback(t *testing.T) {
 		t.Fatalf("Failed to start API server: %v", err)
 	}
 
-	b, err := virtualbus.NewWithBusId(1)
+	b, err := virtualbus.NewWithBusID(1)
 	if err != nil {
 		t.Fatalf("Failed to create virtual bus: %v", err)
 	}
-	defer b.Close()
+	defer b.Close() //nolint:errcheck
 	_ = s.UsbServer.AddBus(b)
 
-	client := apiclient.New(s.ApiServer.Addr())
+	client := viiperclient.New(s.ApiServer.Addr())
 	stream, _, err := client.AddDeviceAndConnect(context.Background(), b.BusID(), "dualshock4", nil)
 	if !assert.NoError(t, err) {
 		return
 	}
-	defer stream.Close()
+	defer stream.Close() //nolint:errcheck
 
 	usbipClient := viiperTesting.NewUsbIpClient(t, s.UsbServer.Addr())
 	devs, err := usbipClient.ListDevices()
@@ -450,7 +461,7 @@ func TestFeedback(t *testing.T) {
 		return
 	}
 	if imp != nil && imp.Conn != nil {
-		defer imp.Conn.Close()
+		defer imp.Conn.Close() //nolint:errcheck
 	}
 
 	for _, tc := range cases {
@@ -471,15 +482,4 @@ func TestFeedback(t *testing.T) {
 			assert.Equal(t, tc.outputState, got)
 		})
 	}
-}
-
-// gateTestCtx returns a context with a short deadline so gated interrupt-IN
-// HandleTransfer calls in tests never block: a signalled input gate completes
-// immediately (GateFresh), an unsignalled one completes at the deadline
-// (GateDeadline) — both build a report from current state. (Port of upstream
-// data-driven completion, 7e33d2d3.)
-func gateTestCtx() context.Context {
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	_ = cancel
-	return ctx
 }

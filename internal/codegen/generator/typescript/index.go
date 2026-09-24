@@ -20,9 +20,11 @@ export * as Xbox360 from './devices/Xbox360';
 `
 
 const deviceIndexTemplate = `{{writeFileHeaderTS}}
-export * from './{{.PascalName}}Input';
-{{if .HasOutput}}export * from './{{.PascalName}}Output';
+{{if .HasInput}}export * from './{{.PascalName}}Input';
+{{end}}{{if .HasOutput}}export * from './{{.PascalName}}Output';
 {{end}}export * from './{{.PascalName}}Constants';
+{{if .HasMeta}}export * from './{{.PascalName}}Meta';
+{{end}}
 `
 
 func generateIndex(logger *slog.Logger, srcDir string) error {
@@ -31,7 +33,7 @@ func generateIndex(logger *slog.Logger, srcDir string) error {
 	if err != nil {
 		return fmt.Errorf("write index.ts: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 	tmpl := template.Must(template.New("index").Funcs(template.FuncMap{
 		"writeFileHeaderTS": writeFileHeaderTS,
 	}).Parse(indexTemplate))
@@ -46,17 +48,29 @@ func generateDeviceIndex(logger *slog.Logger, deviceDir, deviceName string) erro
 
 	pascalName := common.ToPascalCase(deviceName)
 
+	// A device without a c2s wire tag has no generated Input file.
+	hasInput := false
+	if _, err := os.Stat(filepath.Join(deviceDir, pascalName+"Input.ts")); err == nil {
+		hasInput = true
+	}
+
 	hasOutput := false
 	outputPath := filepath.Join(deviceDir, pascalName+"Output.ts")
 	if _, err := os.Stat(outputPath); err == nil {
 		hasOutput = true
 	}
 
+	hasMeta := false
+	metaPath := filepath.Join(deviceDir, pascalName+"Meta.ts")
+	if _, err := os.Stat(metaPath); err == nil {
+		hasMeta = true
+	}
+
 	f, err := os.Create(filepath.Join(deviceDir, "index.ts"))
 	if err != nil {
 		return fmt.Errorf("write device index.ts: %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck
 
 	tmpl := template.Must(template.New("deviceIndex").Funcs(template.FuncMap{
 		"writeFileHeaderTS": writeFileHeaderTS,
@@ -64,10 +78,14 @@ func generateDeviceIndex(logger *slog.Logger, deviceDir, deviceName string) erro
 
 	data := struct {
 		PascalName string
+		HasInput   bool
 		HasOutput  bool
+		HasMeta    bool
 	}{
 		PascalName: pascalName,
+		HasInput:   hasInput,
 		HasOutput:  hasOutput,
+		HasMeta:    hasMeta,
 	}
 
 	if err := tmpl.Execute(f, data); err != nil {

@@ -16,7 +16,7 @@ import (
 )
 
 type XboxElite2 struct {
-	gate       *device.InputGate
+	gate *device.InputGate
 	// inputState is stored by value: retaining a caller pointer forced a
 	// heap allocation per UpdateInputState call at input rate.
 	inputState elite2state.InputState
@@ -32,19 +32,16 @@ type xboxElite2CreateOptions struct {
 
 func New(o *device.CreateOptions) (*XboxElite2, error) {
 	d := &XboxElite2{
-		gate: device.NewInputGate(),
+		gate:       device.NewInputGate(),
 		descriptor: cloneDescriptor(defaultDescriptor),
 		profile:    ProfileElite2,
 	}
 	d.applyProfileDefaults(ProfileElite2)
 	profileExplicit := false
 
-	if o != nil && o.DeviceSpecific != nil {
+	if o != nil && o.DeviceSpecific != "" {
 		var args xboxElite2CreateOptions
-		data, err := json.Marshal(o.DeviceSpecific)
-		if err != nil {
-			return nil, fmt.Errorf("invalid JSON payload: %w", err)
-		}
+		data := []byte(o.DeviceSpecific)
 		if err := json.Unmarshal(data, &args); err != nil {
 			return nil, fmt.Errorf("invalid JSON payload: %w", err)
 		}
@@ -64,21 +61,21 @@ func New(o *device.CreateOptions) (*XboxElite2, error) {
 		if !profileExplicit {
 			vid := d.descriptor.Device.IDVendor
 			pid := d.descriptor.Device.IDProduct
-			if o.IdVendor != nil {
-				vid = *o.IdVendor
+			if o.IDVendor != nil {
+				vid = *o.IDVendor
 			}
-			if o.IdProduct != nil {
-				pid = *o.IdProduct
+			if o.IDProduct != nil {
+				pid = *o.IDProduct
 			}
 			if inferred, ok := profileForIDs(vid, pid); ok {
 				d.applyProfileDefaults(inferred)
 			}
 		}
-		if o.IdVendor != nil {
-			d.descriptor.Device.IDVendor = *o.IdVendor
+		if o.IDVendor != nil {
+			d.descriptor.Device.IDVendor = *o.IDVendor
 		}
-		if o.IdProduct != nil {
-			d.descriptor.Device.IDProduct = *o.IdProduct
+		if o.IDProduct != nil {
+			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
 	}
 
@@ -130,7 +127,7 @@ func cloneDescriptor(src usb.Descriptor) usb.Descriptor {
 		if src.Interfaces[i].HID != nil {
 			hid := *src.Interfaces[i].HID
 			hid.Descriptor.Descriptors = append([]usb.HIDSubDescriptor(nil), src.Interfaces[i].HID.Descriptor.Descriptors...)
-			hid.ReportRaw = append([]byte(nil), src.Interfaces[i].HID.ReportRaw...)
+			hid.ReportDescriptorBytes = append([]byte(nil), src.Interfaces[i].HID.ReportDescriptorBytes...)
 			dst.Interfaces[i].HID = &hid
 		}
 		dst.Interfaces[i].Endpoints = append([]usb.EndpointDescriptor(nil), src.Interfaces[i].Endpoints...)
@@ -160,37 +157,37 @@ func (x *XboxElite2) applyProfileDefaults(profile string) {
 		x.descriptor.Device.IDProduct = DefaultPIDElite2
 		x.descriptor.Strings[2] = "Xbox Wireless Controller"
 		x.descriptor.Strings[3] = "VIIPER-XBOX-1914-01"
-		x.descriptor.Interfaces[0].HID.ReportRaw = append([]byte(nil), xboxBLEHIDDescriptor...)
+		x.descriptor.Interfaces[0].HID.ReportDescriptorBytes = append([]byte(nil), xboxBLEHIDDescriptor...)
 	case ProfileElite2GIP:
 		x.descriptor.Device.IDVendor = DefaultVID
 		x.descriptor.Device.IDProduct = DefaultPIDElite2GIP
 		x.descriptor.Strings[2] = "Xbox Wireless Controller"
 		x.descriptor.Strings[3] = "VIIPER-XE2GIP-01"
-		x.descriptor.Interfaces[0].HID.ReportRaw = append([]byte(nil), xboxBLEHIDDescriptor...)
+		x.descriptor.Interfaces[0].HID.ReportDescriptorBytes = append([]byte(nil), xboxBLEHIDDescriptor...)
 	case ProfileXboxOne:
 		x.descriptor.Device.IDVendor = DefaultVID
 		x.descriptor.Device.IDProduct = DefaultPIDXboxOne
 		x.descriptor.Strings[2] = "Xbox Wireless Controller"
 		x.descriptor.Strings[3] = "VIIPER-XBO-01"
-		x.descriptor.Interfaces[0].HID.ReportRaw = append([]byte(nil), xboxBLEHIDDescriptor...)
+		x.descriptor.Interfaces[0].HID.ReportDescriptorBytes = append([]byte(nil), xboxBLEHIDDescriptor...)
 	case ProfileXboxOneElite:
 		x.descriptor.Device.IDVendor = DefaultVID
 		x.descriptor.Device.IDProduct = DefaultPIDXboxOneElite
 		x.descriptor.Strings[2] = "Xbox One Elite Controller"
 		x.descriptor.Strings[3] = "VIIPER-XE1-01"
-		x.descriptor.Interfaces[0].HID.ReportRaw = append([]byte(nil), xboxBLEHIDDescriptor...)
+		x.descriptor.Interfaces[0].HID.ReportDescriptorBytes = append([]byte(nil), xboxBLEHIDDescriptor...)
 	case ProfileXboxSeries:
 		x.descriptor.Device.IDVendor = DefaultVID
 		x.descriptor.Device.IDProduct = DefaultPIDXboxSeries
 		x.descriptor.Strings[2] = "Xbox Wireless Controller"
 		x.descriptor.Strings[3] = "VIIPER-XSX-01"
-		x.descriptor.Interfaces[0].HID.ReportRaw = append([]byte(nil), xboxBLEHIDDescriptor...)
+		x.descriptor.Interfaces[0].HID.ReportDescriptorBytes = append([]byte(nil), xboxBLEHIDDescriptor...)
 	default:
 		x.descriptor.Device.IDVendor = DefaultVID
 		x.descriptor.Device.IDProduct = DefaultPIDElite2
 		x.descriptor.Strings[2] = "Xbox Wireless Controller"
 		x.descriptor.Strings[3] = "VIIPER-XBOX-1914-01"
-		x.descriptor.Interfaces[0].HID.ReportRaw = append([]byte(nil), xboxBLEHIDDescriptor...)
+		x.descriptor.Interfaces[0].HID.ReportDescriptorBytes = append([]byte(nil), xboxBLEHIDDescriptor...)
 	}
 }
 
@@ -404,17 +401,6 @@ func (x *XboxElite2) HandleControl(bmRequestType, bRequest uint8, wValue, _ uint
 		"reportID", reportID)
 
 	return nil, false
-}
-
-// clampI16 converts a float64 to int16 with saturation.
-func clampI16(v float64) int16 {
-	if v > 32767 {
-		return 32767
-	}
-	if v < -32767 {
-		return -32767
-	}
-	return int16(v)
 }
 
 // NaksWhenIdle reports that real Elite Series 2 pads are event-driven.

@@ -95,103 +95,103 @@ const (
 	USBCmdForceHID    = 0x04
 )
 
-// Battery / connection status byte (byte 2 of 0x30 report).
+// BatteryFull is the battery / connection status byte (byte 2 of the 0x30 report).
 const BatteryFull uint8 = 0x8E // Battery full, USB connected
 
 // Pro Controller HID report descriptor — exact bytes from real hardware.
 // Source: ToadKing/dekuNukem Pro Controller USB captures.
 var proControllerHIDDescriptor = []byte{
-	0x05, 0x01,                         // Usage Page (Generic Desktop Ctrls)
-	0x15, 0x00,                         // Logical Minimum (0)
-	0x09, 0x04,                         // Usage (Joystick)
-	0xA1, 0x01,                         // Collection (Application)
-	0x85, 0x30,                         //   Report ID (0x30) — standard full input
-	0x05, 0x01,                         //   Usage Page (Generic Desktop Ctrls)
-	0x05, 0x09,                         //   Usage Page (Button)
-	0x19, 0x01,                         //   Usage Minimum (1)
-	0x29, 0x0A,                         //   Usage Maximum (10)
-	0x15, 0x00,                         //   Logical Minimum (0)
-	0x25, 0x01,                         //   Logical Maximum (1)
-	0x75, 0x01,                         //   Report Size (1)
-	0x95, 0x0A,                         //   Report Count (10)
-	0x55, 0x00,                         //   Unit Exponent (0)
-	0x65, 0x00,                         //   Unit (None)
-	0x81, 0x02,                         //   Input (Data,Var,Abs)
-	0x05, 0x09,                         //   Usage Page (Button)
-	0x19, 0x0B,                         //   Usage Minimum (11)
-	0x29, 0x0E,                         //   Usage Maximum (14)
-	0x15, 0x00,                         //   Logical Minimum (0)
-	0x25, 0x01,                         //   Logical Maximum (1)
-	0x75, 0x01,                         //   Report Size (1)
-	0x95, 0x04,                         //   Report Count (4)
-	0x81, 0x02,                         //   Input (Data,Var,Abs)
-	0x75, 0x01,                         //   Report Size (1)
-	0x95, 0x02,                         //   Report Count (2)
-	0x81, 0x03,                         //   Input (Const) — padding
-	0x0B, 0x01, 0x00, 0x01, 0x00,      //   Usage (Generic Desktop:Pointer)
-	0xA1, 0x00,                         //   Collection (Physical)
-	0x0B, 0x30, 0x00, 0x01, 0x00,      //     Usage (X)
-	0x0B, 0x31, 0x00, 0x01, 0x00,      //     Usage (Y)
-	0x0B, 0x32, 0x00, 0x01, 0x00,      //     Usage (Z)
-	0x0B, 0x35, 0x00, 0x01, 0x00,      //     Usage (Rz)
-	0x15, 0x00,                         //     Logical Minimum (0)
-	0x27, 0xFF, 0xFF, 0x00, 0x00,      //     Logical Maximum (65535)
-	0x75, 0x10,                         //     Report Size (16)
-	0x95, 0x04,                         //     Report Count (4)
-	0x81, 0x02,                         //     Input (Data,Var,Abs)
-	0xC0,                               //   End Collection (Physical)
-	0x0B, 0x39, 0x00, 0x01, 0x00,      //   Usage (Hat switch)
-	0x15, 0x00,                         //   Logical Minimum (0)
-	0x25, 0x07,                         //   Logical Maximum (7)
-	0x35, 0x00,                         //   Physical Minimum (0)
-	0x46, 0x3B, 0x01,                   //   Physical Maximum (315)
-	0x65, 0x14,                         //   Unit (Degrees)
-	0x75, 0x04,                         //   Report Size (4)
-	0x95, 0x01,                         //   Report Count (1)
-	0x81, 0x02,                         //   Input (Data,Var,Abs)
-	0x05, 0x09,                         //   Usage Page (Button)
-	0x19, 0x0F,                         //   Usage Minimum (15)
-	0x29, 0x12,                         //   Usage Maximum (18)
-	0x15, 0x00,                         //   Logical Minimum (0)
-	0x25, 0x01,                         //   Logical Maximum (1)
-	0x75, 0x01,                         //   Report Size (1)
-	0x95, 0x04,                         //   Report Count (4)
-	0x81, 0x02,                         //   Input (Data,Var,Abs)
-	0x75, 0x08,                         //   Report Size (8)
-	0x95, 0x34,                         //   Report Count (52)
-	0x81, 0x03,                         //   Input (Const) — padding
-	0x06, 0x00, 0xFF,                   //   Usage Page (Vendor Defined 0xFF00)
-	0x85, 0x21,                         //   Report ID (0x21) — subcommand reply
-	0x09, 0x01,                         //   Usage (Vendor Usage 1)
-	0x75, 0x08,                         //   Report Size (8)
-	0x95, 0x3F,                         //   Report Count (63)
-	0x81, 0x03,                         //   Input (Const)
-	0x85, 0x81,                         //   Report ID (0x81) — USB vendor reply
-	0x09, 0x02,                         //   Usage (Vendor Usage 2)
-	0x75, 0x08,                         //   Report Size (8)
-	0x95, 0x3F,                         //   Report Count (63)
-	0x81, 0x03,                         //   Input (Const)
-	0x85, 0x01,                         //   Report ID (0x01) — subcommand output
-	0x09, 0x03,                         //   Usage (Vendor Usage 3)
-	0x75, 0x08,                         //   Report Size (8)
-	0x95, 0x3F,                         //   Report Count (63)
-	0x91, 0x83,                         //   Output (Const,Var,Abs,Volatile)
-	0x85, 0x10,                         //   Report ID (0x10) — rumble only output
-	0x09, 0x04,                         //   Usage (Vendor Usage 4)
-	0x75, 0x08,                         //   Report Size (8)
-	0x95, 0x3F,                         //   Report Count (63)
-	0x91, 0x83,                         //   Output (Const,Var,Abs,Volatile)
-	0x85, 0x80,                         //   Report ID (0x80) — USB vendor command
-	0x09, 0x05,                         //   Usage (Vendor Usage 5)
-	0x75, 0x08,                         //   Report Size (8)
-	0x95, 0x3F,                         //   Report Count (63)
-	0x91, 0x83,                         //   Output (Const,Var,Abs,Volatile)
-	0x85, 0x82,                         //   Report ID (0x82) — vendor output
-	0x09, 0x06,                         //   Usage (Vendor Usage 6)
-	0x75, 0x08,                         //   Report Size (8)
-	0x95, 0x3F,                         //   Report Count (63)
-	0x91, 0x83,                         //   Output (Const,Var,Abs,Volatile)
-	0xC0,                               // End Collection
+	0x05, 0x01, // Usage Page (Generic Desktop Ctrls)
+	0x15, 0x00, // Logical Minimum (0)
+	0x09, 0x04, // Usage (Joystick)
+	0xA1, 0x01, // Collection (Application)
+	0x85, 0x30, //   Report ID (0x30) — standard full input
+	0x05, 0x01, //   Usage Page (Generic Desktop Ctrls)
+	0x05, 0x09, //   Usage Page (Button)
+	0x19, 0x01, //   Usage Minimum (1)
+	0x29, 0x0A, //   Usage Maximum (10)
+	0x15, 0x00, //   Logical Minimum (0)
+	0x25, 0x01, //   Logical Maximum (1)
+	0x75, 0x01, //   Report Size (1)
+	0x95, 0x0A, //   Report Count (10)
+	0x55, 0x00, //   Unit Exponent (0)
+	0x65, 0x00, //   Unit (None)
+	0x81, 0x02, //   Input (Data,Var,Abs)
+	0x05, 0x09, //   Usage Page (Button)
+	0x19, 0x0B, //   Usage Minimum (11)
+	0x29, 0x0E, //   Usage Maximum (14)
+	0x15, 0x00, //   Logical Minimum (0)
+	0x25, 0x01, //   Logical Maximum (1)
+	0x75, 0x01, //   Report Size (1)
+	0x95, 0x04, //   Report Count (4)
+	0x81, 0x02, //   Input (Data,Var,Abs)
+	0x75, 0x01, //   Report Size (1)
+	0x95, 0x02, //   Report Count (2)
+	0x81, 0x03, //   Input (Const) — padding
+	0x0B, 0x01, 0x00, 0x01, 0x00, //   Usage (Generic Desktop:Pointer)
+	0xA1, 0x00, //   Collection (Physical)
+	0x0B, 0x30, 0x00, 0x01, 0x00, //     Usage (X)
+	0x0B, 0x31, 0x00, 0x01, 0x00, //     Usage (Y)
+	0x0B, 0x32, 0x00, 0x01, 0x00, //     Usage (Z)
+	0x0B, 0x35, 0x00, 0x01, 0x00, //     Usage (Rz)
+	0x15, 0x00, //     Logical Minimum (0)
+	0x27, 0xFF, 0xFF, 0x00, 0x00, //     Logical Maximum (65535)
+	0x75, 0x10, //     Report Size (16)
+	0x95, 0x04, //     Report Count (4)
+	0x81, 0x02, //     Input (Data,Var,Abs)
+	0xC0,                         //   End Collection (Physical)
+	0x0B, 0x39, 0x00, 0x01, 0x00, //   Usage (Hat switch)
+	0x15, 0x00, //   Logical Minimum (0)
+	0x25, 0x07, //   Logical Maximum (7)
+	0x35, 0x00, //   Physical Minimum (0)
+	0x46, 0x3B, 0x01, //   Physical Maximum (315)
+	0x65, 0x14, //   Unit (Degrees)
+	0x75, 0x04, //   Report Size (4)
+	0x95, 0x01, //   Report Count (1)
+	0x81, 0x02, //   Input (Data,Var,Abs)
+	0x05, 0x09, //   Usage Page (Button)
+	0x19, 0x0F, //   Usage Minimum (15)
+	0x29, 0x12, //   Usage Maximum (18)
+	0x15, 0x00, //   Logical Minimum (0)
+	0x25, 0x01, //   Logical Maximum (1)
+	0x75, 0x01, //   Report Size (1)
+	0x95, 0x04, //   Report Count (4)
+	0x81, 0x02, //   Input (Data,Var,Abs)
+	0x75, 0x08, //   Report Size (8)
+	0x95, 0x34, //   Report Count (52)
+	0x81, 0x03, //   Input (Const) — padding
+	0x06, 0x00, 0xFF, //   Usage Page (Vendor Defined 0xFF00)
+	0x85, 0x21, //   Report ID (0x21) — subcommand reply
+	0x09, 0x01, //   Usage (Vendor Usage 1)
+	0x75, 0x08, //   Report Size (8)
+	0x95, 0x3F, //   Report Count (63)
+	0x81, 0x03, //   Input (Const)
+	0x85, 0x81, //   Report ID (0x81) — USB vendor reply
+	0x09, 0x02, //   Usage (Vendor Usage 2)
+	0x75, 0x08, //   Report Size (8)
+	0x95, 0x3F, //   Report Count (63)
+	0x81, 0x03, //   Input (Const)
+	0x85, 0x01, //   Report ID (0x01) — subcommand output
+	0x09, 0x03, //   Usage (Vendor Usage 3)
+	0x75, 0x08, //   Report Size (8)
+	0x95, 0x3F, //   Report Count (63)
+	0x91, 0x83, //   Output (Const,Var,Abs,Volatile)
+	0x85, 0x10, //   Report ID (0x10) — rumble only output
+	0x09, 0x04, //   Usage (Vendor Usage 4)
+	0x75, 0x08, //   Report Size (8)
+	0x95, 0x3F, //   Report Count (63)
+	0x91, 0x83, //   Output (Const,Var,Abs,Volatile)
+	0x85, 0x80, //   Report ID (0x80) — USB vendor command
+	0x09, 0x05, //   Usage (Vendor Usage 5)
+	0x75, 0x08, //   Report Size (8)
+	0x95, 0x3F, //   Report Count (63)
+	0x91, 0x83, //   Output (Const,Var,Abs,Volatile)
+	0x85, 0x82, //   Report ID (0x82) — vendor output
+	0x09, 0x06, //   Usage (Vendor Usage 6)
+	0x75, 0x08, //   Report Size (8)
+	0x95, 0x3F, //   Report Count (63)
+	0x91, 0x83, //   Output (Const,Var,Abs,Volatile)
+	0xC0, // End Collection
 }
 
 var defaultDescriptor = usb.Descriptor{
@@ -229,7 +229,7 @@ var defaultDescriptor = usb.Descriptor{
 						{Type: usb.ReportDescType},
 					},
 				},
-				ReportRaw: proControllerHIDDescriptor,
+				ReportDescriptorBytes: proControllerHIDDescriptor,
 			},
 			Endpoints: []usb.EndpointDescriptor{
 				{

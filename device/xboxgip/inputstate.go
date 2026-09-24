@@ -9,14 +9,15 @@ import (
 // Go remaps buttons and scales triggers when building the GIP report.
 //
 // Reserved-byte allocation (helper → libviiper extensions):
-//   Reserved[0] = Elite 2 paddle byte (P1=0x01, P2=0x02, P3=0x04, P4=0x08)
-//                 sent inline in 46-byte input report when PID is 0x0B00.
-//   Reserved[1] = Elite 2 paddle "mode" byte (0 = paddles unmapped /
-//                 forwarded as paddle events; non-zero = mapped, SDL
-//                 suppresses to avoid double-fire with re-mapped buttons).
-//   Reserved[2..5] = unused (zero).
 //
-// viiper:wire xboxgip c2s buttons:u32 lt:u8 rt:u8 lx:i16 ly:i16 rx:i16 ry:i16 paddles:u8 paddleMode:u8 _:u8*4
+//	Reserved[0] = Elite 2 paddle byte (P1=0x01, P2=0x02, P3=0x04, P4=0x08)
+//	              sent inline in 46-byte input report when PID is 0x0B00.
+//	Reserved[1] = Elite 2 paddle "mode" byte (0 = paddles unmapped /
+//	              forwarded as paddle events; non-zero = mapped, SDL
+//	              suppresses to avoid double-fire with re-mapped buttons).
+//	Reserved[2..5] = unused (zero).
+//
+// viiper:wire xboxgip c2s buttons:u32 lt:u8 rt:u8 lx:i16 ly:i16 rx:i16 ry:i16 paddles:u8 paddleMode:u8 reserved:u8*4
 type InputState struct {
 	Buttons  uint32
 	LT, RT   uint8
@@ -65,10 +66,10 @@ func (s *InputState) MarshalBinary() ([]byte, error) {
 //
 // viiper:wire xboxgip s2c leftMotor:u8 rightMotor:u8 leftTrigger:u8 rightTrigger:u8
 type OutputState struct {
-	LeftMotor     uint8
-	RightMotor    uint8
-	LeftTrigger   uint8
-	RightTrigger  uint8
+	LeftMotor    uint8
+	RightMotor   uint8
+	LeftTrigger  uint8
+	RightTrigger uint8
 }
 
 // MarshalBinary encodes OutputState to 4 bytes.

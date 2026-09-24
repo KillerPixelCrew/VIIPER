@@ -64,11 +64,12 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 			if frameSize == 0 {
 				if detected, ok := detectInputFrameSize(pending); ok {
 					frameSize = detected
-					if frameSize == elite2state.LegacyInputStateSize {
+					switch frameSize {
+					case elite2state.LegacyInputStateSize:
 						logger.Warn("xboxelite2: detected legacy 14-byte stream; IMU forwarding disabled for this session")
-					} else if frameSize == elite2state.InputStateV1Size {
+					case elite2state.InputStateV1Size:
 						logger.Info("xboxelite2: detected 26-byte stream with IMU")
-					} else {
+					default:
 						logger.Info("xboxelite2: detected 33-byte stream with IMU + Steam touchpad")
 					}
 				} else if len(pending) > elite2state.InputStateSize*128 {
@@ -164,4 +165,8 @@ func plausibleFrame(frame []byte, frameSize int) bool {
 		}
 	}
 	return true
+}
+
+func (h *handler) UpdateMetaState(meta string, dev *usb.Device) error {
+	return nil
 }

@@ -16,13 +16,14 @@ import (
 	"io"
 )
 
+// nolint
 // viiper:wire xboxelite2 c2s buttons:u16 lt:u8 rt:u8 lx:i16 ly:i16 rx:i16 ry:i16 dpad:u8 _:u8 gyroX:i16 gyroY:i16 gyroZ:i16 accelX:i16 accelY:i16 accelZ:i16 touchFlags:u8 rPadX:i16 rPadY:i16 rPadForce:u16
 type InputState struct {
-	Buttons  uint16
-	LT, RT   uint8
-	LX, LY   int16
-	RX, RY   int16
-	DPad     uint8
+	Buttons uint16
+	LT, RT  uint8
+	LX, LY  int16
+	RX, RY  int16
+	DPad    uint8
 	// Reserved bit 0 is used as share/capture.
 	Reserved uint8
 	// Steam Deck profiles consume these directly into bytes 24..35.
@@ -154,6 +155,7 @@ func (s *InputState) UnmarshalLegacyBinary(data []byte) error {
 	return nil
 }
 
+// nolint
 // viiper:wire xboxelite2 s2c rumbleLeft:u8 rumbleRight:u8 rumbleTriggerLeft:u8 rumbleTriggerRight:u8
 type OutputState struct {
 	RumbleLeft         uint8

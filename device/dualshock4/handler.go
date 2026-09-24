@@ -1,10 +1,12 @@
 package dualshock4
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/internal/server/api"
@@ -17,7 +19,44 @@ func init() {
 
 type handler struct{}
 
-func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) { return New(o) }
+// serials holds the serial numbers of DualShock 4 devices in use.
+var serials = device.NewIdentityPool()
+
+func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
+	if o == nil {
+		o = &device.CreateOptions{}
+	}
+
+	metaState := MetaState{}
+	if o.DeviceSpecific != "" {
+		if err := json.Unmarshal([]byte(o.DeviceSpecific), &metaState); err != nil {
+			return nil, fmt.Errorf("invalid device specific JSON: %w", err)
+		}
+	}
+	serial := DefaultSerialString
+	if metaState.SerialNumber != "" {
+		serial = metaState.SerialNumber
+	}
+	// The wire format is 16 hex digits; zero-pad, as space padding does not decode.
+	if len(serial) < 16 {
+		serial = strings.Repeat("0", 16-len(serial)) + serial
+	}
+	metaState.SerialNumber = serials.Reserve(serial)
+	b, err := json.Marshal(metaState)
+	if err != nil {
+		return nil, fmt.Errorf("marshal meta state: %w", err)
+	}
+	o.DeviceSpecific = string(b)
+	d, err := New(o)
+	if err != nil {
+		serials.Release(metaState.SerialNumber)
+		return nil, err
+	}
+	// Held for as long as the device is on the bus, not for one stream.
+	reserved := metaState.SerialNumber
+	d.OnRelease(func() { serials.Release(reserved) })
+	return d, nil
+}
 
 func (h *handler) StreamHandler() api.StreamHandlerFunc {
 	return func(conn net.Conn, devPtr *usb.Device, logger *slog.Logger) error {
@@ -26,7 +65,7 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 		}
 		ds4, ok := (*devPtr).(*DualShock4)
 		if !ok {
-			return fmt.Errorf("device is not dualshock4")
+			return fmt.Errorf("%w: expected DualShock4", device.ErrWrongDeviceType)
 		}
 
 		ds4.SetOutputCallback(func(feedback OutputState) {
@@ -57,4 +96,19 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 			ds4.UpdateInputState(&state)
 		}
 	}
+}
+
+func (h *handler) UpdateMetaState(meta string, dev *usb.Device) error {
+	ds4, ok := (*dev).(*DualShock4)
+	if !ok {
+		return fmt.Errorf("%w: expected DualShock4", device.ErrWrongDeviceType)
+	}
+	var metaState MetaState
+	err := json.Unmarshal([]byte(meta), &metaState)
+	if err != nil {
+		return fmt.Errorf("unmarshal meta state: %w", err)
+	}
+	ds4.SetMetaState(metaState)
+
+	return nil
 }

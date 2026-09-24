@@ -6,10 +6,10 @@
 // and the Windows PnP state for the resulting device.
 //
 // Iterate by:
-//   1. Edit device/xboxgip/{device.go,protocol.go,...} in this repo.
-//   2. go build -o gip_probe.exe ./cmd/gip_probe
-//   3. go build -o viiper.exe ./cmd/viiper        (server rebuild)
-//   4. Restart viiper.exe and rerun gip_probe.exe.
+//  1. Edit device/xboxgip/{device.go,protocol.go,...} in this repo.
+//  2. go build -o gip_probe.exe ./cmd/gip_probe
+//  3. go build -o viiper.exe ./cmd/viiper        (server rebuild)
+//  4. Restart viiper.exe and rerun gip_probe.exe.
 //
 // Each iteration ~30s of Go build + ~10s of test. No MSIX install,
 // no GoTweaks helper restart.
@@ -24,8 +24,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Alia5/VIIPER/apiclient"
 	"github.com/Alia5/VIIPER/device"
+	"github.com/Alia5/VIIPER/viiperclient"
 )
 
 func main() {
@@ -37,7 +37,7 @@ func main() {
 	flag.Parse()
 
 	ctx := context.Background()
-	api := apiclient.New(*addr)
+	api := viiperclient.New(*addr)
 
 	// Find or create a bus.
 	busesResp, err := api.BusListCtx(ctx)
@@ -61,18 +61,18 @@ func main() {
 	opts := &device.CreateOptions{}
 	if *vid != 0 {
 		v := uint16(*vid)
-		opts.IdVendor = &v
+		opts.IDVendor = &v
 	}
 	if *pid != 0 {
 		p := uint16(*pid)
-		opts.IdProduct = &p
+		opts.IDProduct = &p
 	}
 
 	dev, err := api.DeviceAddCtx(ctx, busID, "xboxgip", opts)
 	if err != nil {
 		fatalf("DeviceAdd xboxgip failed: %v", err)
 	}
-	fmt.Printf("[+] added xboxgip device devId=%s vid=%s pid=%s\n", dev.DevId, dev.Vid, dev.Pid)
+	fmt.Printf("[+] added xboxgip device devId=%s vid=%s pid=%s\n", dev.DevID, dev.Vid, dev.Pid)
 
 	// Wait for protocol to play out.
 	fmt.Printf("[+] waiting %ds for GIP protocol...\n", *waitSec)
@@ -90,8 +90,8 @@ func main() {
 	fmt.Printf("[+] gamepad_present=%s\n", gp)
 
 	if !*keep {
-		_, _ = api.DeviceRemoveCtx(ctx, busID, dev.DevId)
-		fmt.Printf("[+] removed device %s\n", dev.DevId)
+		_, _ = api.DeviceRemoveCtx(ctx, busID, dev.DevID)
+		fmt.Printf("[+] removed device %s\n", dev.DevID)
 	}
 
 	fmt.Println("=== RESULT outcome=" + summary.outcome + " gamepad_present=" + gp + " ===")
