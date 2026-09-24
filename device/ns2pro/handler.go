@@ -18,7 +18,8 @@ func init() {
 
 type handler struct{}
 
-var serials = map[string]struct{}{}
+// serials holds the serial numbers of NS2 Pro devices in use.
+var serials = device.NewIdentityPool()
 
 func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	if o == nil {
@@ -36,21 +37,7 @@ func (h *handler) CreateDevice(o *device.CreateOptions) (usb.Device, error) {
 	if serial == "" {
 		serial = DefaultSerial
 	}
-	if _, ok := serials[serial]; ok {
-		if len(serial) < 2 {
-			serial = DefaultSerial
-		}
-		for i := 1; i < 16; i++ {
-			newSerial := fmt.Sprintf("%s%02X", serial[:len(serial)-2], i)
-			if _, exists := serials[newSerial]; !exists {
-				serial = newSerial
-				break
-			}
-		}
-	}
-
-	metaState.SerialNumber = serial
-	serials[serial] = struct{}{}
+	metaState.SerialNumber = serials.Reserve(serial)
 
 	b, err := json.Marshal(metaState)
 	if err != nil {
@@ -76,7 +63,7 @@ func (h *handler) StreamHandler() api.StreamHandlerFunc {
 			if serial == "" {
 				return
 			}
-			delete(serials, serial)
+			serials.Release(serial)
 			slog.Debug("ns2pro disconnected, serial released", "serial", serial)
 		}()
 

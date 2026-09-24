@@ -39,6 +39,10 @@ func inferDeviceType(dev any) string {
 	if dev == nil {
 		return ""
 	}
+	// Variants that share a Go type name their registry type themselves.
+	if typed, ok := dev.(interface{ DeviceType() string }); ok {
+		return typed.DeviceType()
+	}
 	t := reflect.TypeOf(dev)
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()

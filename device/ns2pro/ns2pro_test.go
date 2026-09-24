@@ -12,6 +12,7 @@ import (
 	"unicode/utf16"
 
 	viiperTesting "github.com/Alia5/VIIPER/_testing"
+	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/internal/server/api"
 	apihandler "github.com/Alia5/VIIPER/internal/server/api/handler"
 	"github.com/Alia5/VIIPER/usb"
@@ -130,9 +131,9 @@ func TestDescriptor(t *testing.T) {
 }
 
 func TestCreateDeviceDeduplicatesSerial(t *testing.T) {
-	serials = map[string]struct{}{}
+	serials = device.NewIdentityPool()
 	t.Cleanup(func() {
-		serials = map[string]struct{}{}
+		serials = device.NewIdentityPool()
 	})
 
 	h := &handler{}

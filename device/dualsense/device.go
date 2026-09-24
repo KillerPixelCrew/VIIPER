@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Alia5/VIIPER/device"
@@ -27,8 +29,11 @@ type DualSense struct {
 
 	subcommand [2]byte
 
-	seqCounter    uint8
+	seqCounter    atomic.Uint32
 	timestampBase time.Time
+
+	// edge is set for the DualSense Edge variant, which shares this type.
+	edge bool
 
 	mtx sync.Mutex
 }
@@ -89,7 +94,11 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
 	d := &DualSense{
 		descriptor: defaultDescriptor,
 		metaState:  metaState,
+		edge:       edge,
 	}
+	// The struct copy above still shares defaultDescriptor's Strings map, and
+	// the Edge variant rewrites the product string.
+	d.descriptor.Strings = maps.Clone(defaultDescriptor.Strings)
 	d.descriptor.Device.IDProduct = DefaultPIDDS
 	if edge {
 		d.descriptor.Device.IDProduct = DefaultPIDDSEdge
@@ -119,6 +128,15 @@ func new(o *device.CreateOptions, edge bool) (*DualSense, error) {
 	return d, nil
 }
 
+// DeviceType returns the registry name of this variant. Both variants share
+// one Go type, so the API cannot tell them apart by reflection.
+func (d *DualSense) DeviceType() string {
+	if d.edge {
+		return "dualsenseedge"
+	}
+	return "dualsense"
+}
+
 func (d *DualSense) SetMetaState(meta MetaState) {
 	d.mtx.Lock()
 	defer d.mtx.Unlock()
@@ -130,6 +148,9 @@ func (d *DualSense) SetOutputCallback(f func(OutputState)) {
 }
 
 func (d *DualSense) UpdateInputState(state *InputState) {
+	if state == nil {
+		state = NewInputState()
+	}
 	d.mtx.Lock()
 	d.inputState = state
 	d.mtx.Unlock()
@@ -406,8 +427,7 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 	b[5] = s.L2
 	b[6] = s.R2
 
-	d.seqCounter++
-	b[7] = d.seqCounter
+	b[7] = uint8(d.seqCounter.Add(1))
 
 	usbDPad := uint8(DPadUSBNeutral)
 	switch {
@@ -429,7 +449,14 @@ func (d *DualSense) buildUSBInputReport(s *InputState, m *MetaState) []byte {
 		usbDPad = DPadUSBRight
 	}
 	b[8] = (usbDPad & DPadMask) | (uint8(s.Buttons) & 0xF0)
-	b[9] = uint8(s.Buttons >> 8)
+	buttons := s.Buttons
+	if s.L2 > 0 {
+		buttons |= ButtonL2
+	}
+	if s.R2 > 0 {
+		buttons |= ButtonR2
+	}
+	b[9] = uint8(buttons >> 8)
 	b[10] = uint8(s.Buttons >> 16)
 
 	binary.LittleEndian.PutUint16(b[16:18], uint16(s.GyroX))

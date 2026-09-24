@@ -43,34 +43,13 @@ func (h *dsedgehandler) CreateDevice(o *device.CreateOptions) (usb.Device, error
 			serial = serial[:4] + code[:2] + serial[6:]
 		}
 	}
-	if _, ok := serials[serial]; ok {
-		for i := 1; i < 16; i++ {
-			newSerial := fmt.Sprintf("%s%02X", serial[:len(serial)-2], i)
-			if _, exists := serials[newSerial]; !exists {
-				serial = newSerial
-				break
-			}
-		}
-	}
-	metaState.SerialNumber = serial
-	serials[serial] = struct{}{}
+	metaState.SerialNumber = serials.Reserve(serial)
 
 	mac := metaState.MACAddress
 	if mac == "" {
 		mac = DefaultMACAddressDSEdge
 	}
-	if _, ok := macs[mac]; ok {
-		prefix := mac[:len(mac)-2]
-		for i := 1; i <= 16; i++ {
-			candidate := fmt.Sprintf("%s%02X", prefix, i)
-			if _, exists := macs[candidate]; !exists {
-				mac = candidate
-				break
-			}
-		}
-	}
-	metaState.MACAddress = mac
-	macs[mac] = struct{}{}
+	metaState.MACAddress = macs.Reserve(mac)
 
 	b, err := json.Marshal(metaState)
 	if err != nil {
@@ -96,8 +75,8 @@ func (h *dsedgehandler) StreamHandler() api.StreamHandlerFunc {
 			serial := dse.metaState.SerialNumber
 			mac := dse.metaState.MACAddress
 			dse.mtx.Unlock()
-			delete(serials, serial)
-			delete(macs, mac)
+			serials.Release(serial)
+			macs.Release(mac)
 			slog.Debug("DualSenseEdge disconnected, serial/mac released", "serial", serial, "mac", mac)
 		}()
 
