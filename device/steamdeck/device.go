@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Alia5/VIIPER/device"
 	"github.com/Alia5/VIIPER/usb"
@@ -27,7 +28,11 @@ type SteamDeck struct {
 	gate *device.InputGate
 	// inputState is stored by value so an update does not allocate; readers copy it under
 	// stateMu.
-	inputState          InputState
+	inputState InputState
+	// gyro turns the client's samples into the mean rate over each poll; see gyroresampler.go.
+	gyro gyroResampler
+	// now is the clock behind the resampler; tests replace it.
+	now                 func() time.Time
 	stateMu             sync.Mutex
 	featureMu           sync.Mutex
 	outputFunc          func(OutputState)
@@ -116,6 +121,7 @@ func cloneDescriptor() usb.Descriptor {
 func New(o *device.CreateOptions) (*SteamDeck, error) {
 	d := &SteamDeck{
 		gate:       device.NewInputGate(),
+		now:        time.Now,
 		descriptor: cloneDescriptor(),
 		controller: newControllerState(),
 	}
@@ -139,11 +145,21 @@ func (d *SteamDeck) UpdateInputState(state *InputState) {
 	defer d.stateMu.Unlock()
 	if state == nil {
 		d.inputState = InputState{}
+		d.gyro.reset()
 		d.gate.Signal()
 		return
 	}
 	d.inputState = *state
+	d.gyro.update(d.now(), state.Pitch, state.Yaw, state.Roll)
 	d.gate.Signal()
+}
+
+// reportState returns the state for a report sent now: the latest sample for everything but the
+// gyro, which carries the mean rate since the previous report. Called under stateMu.
+func (d *SteamDeck) reportState() InputState {
+	st := d.inputState
+	st.Pitch, st.Yaw, st.Roll = d.gyro.report(d.now())
+	return st
 }
 
 // nextFrame advances the packet number. The firmware counts reports, not state changes: every
@@ -171,13 +187,13 @@ func (d *SteamDeck) InputSignal(ep uint32) <-chan struct{} {
 }
 
 // WriteInputReport encodes the controller endpoint's current state without allocating. Each call
-// is one report on the wire and takes the next packet number.
+// is one report on the wire: it takes the next packet number and closes one gyro interval.
 func (d *SteamDeck) WriteInputReport(ep uint32, buf []byte) (int, bool) {
 	if ep != controllerEndpointNumber || len(buf) < InputReportLen {
 		return 0, false
 	}
 	d.stateMu.Lock()
-	st := d.inputState
+	st := d.reportState()
 	d.stateMu.Unlock()
 	st.writeReport(buf, d.nextFrame(), DeckInputPayloadLen)
 	return InputReportLen, true
@@ -196,7 +212,7 @@ func (d *SteamDeck) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 				return nil
 			}
 			d.stateMu.Lock()
-			st := d.inputState
+			st := d.reportState()
 			d.stateMu.Unlock()
 			return st.buildReport(d.nextFrame(), DeckInputPayloadLen)
 		default:

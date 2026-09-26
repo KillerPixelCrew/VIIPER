@@ -44,6 +44,12 @@ upstream, it adds or changes (non-exhaustive):
 - `device/xbox360`, `keyboard`, `mouse`, `dualshock4`: input is signalled
   through a shared input gate and stored by value, so updates do not allocate.
   The DualShock 4 calibration report declares VIIPER's accel scale as 1g.
+- Paced interrupt-IN endpoints complete on their `bInterval` grid with the
+  state current at each poll, and the Steam Deck numbers every report it sends
+  and reports the mean gyro rate over each poll interval rather than the latest
+  sample, so a host that integrates the gyro per report sees the rotation the
+  client's samples described whatever the sensor's cadence
+  (`docs/wsgm-idle-endpoints.md`).
 
 `device/dualsense` and `device/ns2pro` are upstream's implementations.
 

@@ -70,6 +70,15 @@ hidden while the client submitted every pad report unconditionally, because a si
 pending at nearly every poll; skipping unchanged frames exposed it. `TestCompletionsStayOnTheEndpointGrid`
 in `internal/server/usb` covers the cadence and the counter.
 
+The grid alone left a ripple. Steam integrates the Deck's gyro per report with a fixed step, so a
+report that copies the latest sample counts that sample once or twice depending on how the sensor's
+cadence lines up with the poll's: a 125 Hz gyro on the 6 ms endpoint put every fourth sample into
+two reports, a 25 % velocity ripple at 42 Hz, still felt as a fine judder after the grid fix. The
+Steam Deck device now reports the mean gyro rate since the previous report
+(`device/steamdeck/gyroresampler.go`), holding each sample until the next arrives, so the sum of the
+reported rates equals the rotation the samples described for any pair of cadences. The
+accelerometer is still the latest sample.
+
 ## Data-driven completions
 
 A device that implements `usb.InterruptInSource` is served without a blocking call per poll. The
