@@ -26,7 +26,7 @@ upstream, it adds or changes (non-exhaustive):
 - `clib`: a C shared library (`libviiper.dll`) with a single embedded server,
   add and attach as separate calls, per-type input fast paths, raw feedback
   callbacks that are drained before a device is removed, usbip client plug-out
-  on remove, panic recovery at the cgo boundary, a single-P `GOMAXPROCS` default,
+  on remove, panic recovery at the cgo boundary, a capped `GOMAXPROCS` default,
   and a device-type alias system (handheld VID/PID overrides and deprecation
   warnings).
 - `internal/server/usb`: persistent per-endpoint interrupt-IN workers,

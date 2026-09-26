@@ -31,8 +31,12 @@ type ServerConfig struct {
 	// input, and for an untouched controller that is the whole cost of the emulation: one
 	// loopback write and one timer every bInterval, carrying bytes the host already has. After
 	// the first such repeat the endpoint waits this long instead, and returns to its bInterval
-	// the moment real input arrives. Fresh input never waits for either timer, so a longer idle
-	// interval costs no input latency. Values below the endpoint's bInterval, and 0, mean every
-	// bInterval as before.
-	IdleKeepaliveInterval time.Duration `help:"How often an unchanged interrupt-IN report is repeated once an endpoint is idle" default:"64ms" env:"VIIPER_IDLE_KEEPALIVE_INTERVAL"`
+	// the moment real input arrives. Values below the endpoint's bInterval, and 0, mean every
+	// bInterval.
+	//
+	// It defaults to 0 because 64 ms made the gyro stutter on an MSI Claw and a ROG Ally, which
+	// a device-level A/B pinned to this setting alone (2026-09-26). Fresh input never waits for
+	// the timer, so the cause is not input latency and is not yet understood; opt in to a slower
+	// repeat only where it has been measured on the consumer that will see it.
+	IdleKeepaliveInterval time.Duration `help:"How often an unchanged interrupt-IN report is repeated once an endpoint is idle" default:"0" env:"VIIPER_IDLE_KEEPALIVE_INTERVAL"`
 }

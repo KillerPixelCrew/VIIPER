@@ -334,13 +334,20 @@ func idleModeFromEnv() string {
 }
 
 // defaultIdleKeepaliveInterval is how often a keepalive endpoint repeats a report the host
-// already has, once it has gone idle. Repeating at the endpoint's bInterval is what a streaming
-// device does, and for an untouched controller it is the whole cost of the emulation: at 6 ms
-// that is 166 loopback writes a second carrying bytes nothing consumed. Fresh input still
-// completes immediately, so the only thing this changes is the heartbeat rate of a controller
-// no one is touching. VIIPER_IDLE_KEEPALIVE_INTERVAL takes a Go duration and 0 restores the
-// bInterval repeat.
-const defaultIdleKeepaliveInterval = 64 * time.Millisecond
+// already has, once it has gone idle. 0 means every bInterval, which is what a streaming device
+// does and what this now defaults to.
+//
+// It defaulted to 64 ms, on the reasoning that repeating a report nothing consumed is pure cost
+// for a controller no one is touching, and that fresh input never waits for the timer anyway.
+// The gyro stuttered on an MSI Claw and a ROG Ally, and a device-level A/B pinned it to exactly
+// this: at 6 ms the stutter goes, at 64 ms it comes back, with nothing else changed
+// (2026-09-26). A harness that measured completion cadence under a 100 Hz input stream saw no
+// difference between the two, so whatever the mechanism is, it is something the real host does
+// that the harness does not model. Until that is understood, the emulation repeats at the
+// endpoint's bInterval like the hardware it stands in for.
+//
+// VIIPER_IDLE_KEEPALIVE_INTERVAL takes a Go duration and still sets a slower repeat.
+const defaultIdleKeepaliveInterval = 0
 
 func idleKeepaliveIntervalFromEnv() time.Duration {
 	v := os.Getenv("VIIPER_IDLE_KEEPALIVE_INTERVAL")
@@ -370,20 +377,22 @@ func viiper_init(listenAddr *C.char) (rc C.int) {
 		addr = "0.0.0.0:3241"
 	}
 
-	// The embedded server does microseconds of work per URB, so one P is enough. With more,
-	// every URB is handed from the reader goroutine to the endpoint worker across OS threads,
-	// which the measurement in internal/server/usb/urbcycle_bench_test.go puts at three extra
-	// context switches per completion and a third more CPU. A caller's input update still runs
-	// on its own thread: it borrows the idle P for the microseconds it takes, and sysmon hands
-	// the P back to the worker afterwards. VIIPER_GOMAXPROCS overrides; GOGC/GOMEMLIMIT work as
-	// usual via env.
-	maxProcs := 1
+	// The embedded server runs a handful of goroutines; on big machines the
+	// default GOMAXPROCS=NumCPU only adds scheduler and netpoller overhead.
+	// VIIPER_GOMAXPROCS overrides; GOGC/GOMEMLIMIT work as usual via env.
+	//
+	// Pinning this to one P measured better on an idle endpoint, but the idle measurement is
+	// not the case that matters: a device-level A/B on an MSI Claw put the cap back at four
+	// while the gyro was stuttering and the stutter stayed, so one P is not the cause, and it
+	// is not worth carrying an unexplained scheduling change on the input path for an idle
+	// saving (2026-09-26).
 	if v := os.Getenv("VIIPER_GOMAXPROCS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			maxProcs = n
+			runtime.GOMAXPROCS(n)
 		}
+	} else if runtime.NumCPU() > 4 {
+		runtime.GOMAXPROCS(4)
 	}
-	runtime.GOMAXPROCS(maxProcs)
 
 	// Set up file-based logging next to the DLL for protocol debugging.
 	if exe, err := os.Executable(); err == nil {

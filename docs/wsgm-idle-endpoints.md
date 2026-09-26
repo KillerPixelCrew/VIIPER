@@ -29,18 +29,28 @@ already has. Measured with `internal/server/usb/urbcycle_bench_test.go` on an MS
 came to 107 Mcycles/s and 678 thread context switches a second, roughly 3.5 % of one core, spent on
 a device in a drawer.
 
-`IdleKeepaliveInterval` (`VIIPER_IDLE_KEEPALIVE_INTERVAL`, default 64 ms) paces that repeat once an
-endpoint has gone quiet. The first repeat still arrives one `bInterval` after the last real input,
-so a device that is streaming looks unchanged; only an endpoint that has already repeated itself
-slows down, and it returns to its `bInterval` the moment real input arrives. Fresh input never waits
-for either timer, so there is no input latency to trade away. Set the value to 0 to repeat every
-`bInterval` as before.
+`IdleKeepaliveInterval` (`VIIPER_IDLE_KEEPALIVE_INTERVAL`) paces that repeat once an endpoint has
+gone quiet. The first repeat still arrives one `bInterval` after the last real input; only an
+endpoint that has already repeated itself slows down, and it returns to its `bInterval` the moment
+real input arrives. 0, the default, repeats every `bInterval`.
 
 | Idle repeat | Completions/s | Mcycles/s | Context switches/s |
 | ----------- | ------------- | --------- | ------------------ |
 | 6 ms        | 146           | 107       | 678                |
 | 64 ms       | 15.5          | 14        | 78                 |
 | 250 ms      | 4.1           | 5.7       | 21                 |
+
+**It defaults to 0 because 64 ms made the gyro stutter.** Reported on a ROG Ally and reproduced on
+an MSI Claw 8 AI+, and pinned to this setting alone by a device-level A/B: at 6 ms the stutter goes,
+at 64 ms it comes back, with WSGM, Steam and everything else unchanged (2026-09-26).
+
+The mechanism is not understood, and the reasoning that made 64 ms look safe is what is wrong.
+"Fresh input never waits for either timer" is true, and a harness driving the real server with a
+100 Hz input stream against the Deck's 6 ms `bInterval` measured the same completion cadence either
+way — 67 completions and a 10.5 ms longest gap in 400 ms, at both settings and at every
+`GOMAXPROCS`. The device disagrees, so the harness is not modelling what the real host and Steam do
+with the stream. Do not raise this default again on a cadence measurement; raise it only against the
+consumer that will actually read the reports.
 
 ## Data-driven completions
 
@@ -60,15 +70,23 @@ how a placeholder endpoint says it has nothing of its own to send.
 
 ## GOMAXPROCS
 
-`libviiper` runs the server with `GOMAXPROCS=1` unless `VIIPER_GOMAXPROCS` says otherwise. The work
-per URB is microseconds, and with more than one P every URB is handed from the reading goroutine to
-its endpoint worker across OS threads: three more context switches per completion and about a third
-more CPU, measured. A caller's input update still runs on its own thread and borrows the idle P for
-the microseconds it takes.
+`libviiper` caps `GOMAXPROCS` at 4 on machines with more cores, unless `VIIPER_GOMAXPROCS` says
+otherwise. Pinning it to 1 measured better — the work per URB is microseconds, and with more than
+one P every URB is handed from the reading goroutine to its endpoint worker across OS threads:
+three more context switches per completion and about a third more CPU.
+
+That pin was reverted anyway. It was the first suspect for the gyro stutter, because a caller's
+input update arrives over cgo from a thread of its own and has to acquire the single P — the one
+thing the harness cannot model, since its producer is an in-runtime goroutine. The device said
+otherwise: with the cap back at 4 the stutter stayed, and it was the idle repeat all along. An
+unexplained scheduling change on the input path is not worth an idle saving.
 
 ## Validation status
 
-The library was compiled and measured with the harness above. Live controller, gyro and rumble
-validation against Steam is the maintainer's manual check; the idle repeat interval is the one
-change a consumer could notice, and `VIIPER_IDLE_KEEPALIVE_INTERVAL=0` restores the old cadence
-without a rebuild.
+The library was compiled and measured with the harness above, and the two pacing changes were then
+A/B tested one at a time on an MSI Claw 8 AI+ against live Steam, which is what found the stutter
+and told the two apart. Rumble is still the maintainer's manual check.
+
+Take the harness numbers for what they are: allocation and cycle counts per completion, measured
+against a test client. They did not predict what a real host and Steam do with a slowed report
+stream, and on the one occasion that mattered they pointed the wrong way.
