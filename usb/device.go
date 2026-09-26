@@ -15,6 +15,27 @@ type Device interface {
 	GetDeviceSpecificArgs() map[string]any
 }
 
+// InterruptInSource is an optional interface for devices whose interrupt-IN endpoints can be
+// served without a call per poll. The server then owns the poll timer and the completion frame:
+// an endpoint whose state has not changed since its last report is completed by sending that
+// report again, with no allocation, no context per URB and no call into the device.
+//
+// A device that implements it keeps HandleTransfer for its OUT endpoints, for bulk endpoints and
+// for any interrupt-IN endpoint it declines here.
+type InterruptInSource interface {
+	// InputSignal returns the endpoint's fresh-input channel. A receive means the endpoint's
+	// state changed since its last report was built, and the channel must coalesce: any number
+	// of changes between two receives collapse into one. A nil channel means the endpoint never
+	// produces input of its own, so its URBs stay pending until the poll interval or teardown;
+	// returning nil for an endpoint the device does serve through HandleTransfer requires the
+	// endpoint to NAK when idle, otherwise the server uses HandleTransfer for it instead.
+	InputSignal(ep uint32) <-chan struct{}
+	// WriteInputReport encodes the endpoint's current input state into buf and returns its
+	// length. false means the endpoint has nothing to report right now, and the URB stays
+	// pending.
+	WriteInputReport(ep uint32, buf []byte) (int, bool)
+}
+
 // ControlDevice is an optional interface for devices that need to handle
 // control transfers on endpoint 0 (EP0).
 //

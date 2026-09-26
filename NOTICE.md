@@ -26,11 +26,14 @@ upstream, it adds or changes (non-exhaustive):
 - `clib`: a C shared library (`libviiper.dll`) with a single embedded server,
   add and attach as separate calls, per-type input fast paths, raw feedback
   callbacks that are drained before a device is removed, usbip client plug-out
-  on remove, panic recovery at the cgo boundary, and a device-type alias system
-  (handheld VID/PID overrides and deprecation warnings).
+  on remove, panic recovery at the cgo boundary, a single-P `GOMAXPROCS` default,
+  and a device-type alias system (handheld VID/PID overrides and deprecation
+  warnings).
 - `internal/server/usb`: persistent per-endpoint interrupt-IN workers,
-  hardware-paced completions, and per-device NAK-idle endpoints, in place of
-  upstream's per-URB completion goroutines.
+  hardware-paced completions, per-device NAK-idle endpoints, a paced repeat of an
+  unchanged report once an endpoint is idle, and an allocation-free completion
+  path for devices that implement `usb.InterruptInSource`, in place of upstream's
+  per-URB completion goroutines.
 - Windows attach: a cancellable overlapped `plugin_hardware` IOCTL that
   negotiates the usbip-win2 0.9.7.7, 0.9.7.8 and 0.9.8.0 layouts, and requests
   the low-latency (WSK event) receive mode on 0.9.8.0.

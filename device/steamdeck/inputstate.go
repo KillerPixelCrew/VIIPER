@@ -147,6 +147,14 @@ func clampStickMin(v int16) int16 {
 
 func (s *InputState) buildReport(frame uint32, payloadLen byte) []byte {
 	b := make([]byte, InputReportLen)
+	s.writeReport(b, frame, payloadLen)
+	return b
+}
+
+// writeReport encodes the state into b, which must be InputReportLen bytes. It is the poll hot
+// path, so it allocates nothing.
+func (s *InputState) writeReport(b []byte, frame uint32, payloadLen byte) {
+	clear(b[:InputReportLen])
 	b[0] = 0x01
 	b[1] = 0x00
 	b[2] = InputReportID
@@ -275,7 +283,6 @@ func (s *InputState) buildReport(frame uint32, payloadLen byte) []byte {
 	binary.LittleEndian.PutUint16(b[58:60], s.RPadForce)
 	binary.LittleEndian.PutUint16(b[60:62], s.LStickForce)
 	binary.LittleEndian.PutUint16(b[62:64], s.RStickForce)
-	return b
 }
 
 type OutputState struct {
