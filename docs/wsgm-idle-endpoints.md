@@ -1,8 +1,9 @@
 # Idle interrupt-IN endpoints
 
 What an emulated device costs while nobody is touching it, and how the downstream branch keeps that
-cost down. The short version: fresh input is always delivered immediately, and an endpoint that has
-nothing new to say is as quiet as its consumer allows.
+cost down. The short version: a paced endpoint reports on its `bInterval` grid with the state it has
+at each poll, the way a host reads real hardware, and an endpoint that has nothing new to say is as
+quiet as its consumer allows.
 
 ## Placeholder endpoints
 
@@ -44,20 +45,38 @@ real input arrives. 0, the default, repeats every `bInterval`.
 an MSI Claw 8 AI+, and pinned to this setting alone by a device-level A/B: at 6 ms the stutter goes,
 at 64 ms it comes back, with WSGM, Steam and everything else unchanged (2026-09-26).
 
-The mechanism is not understood, and the reasoning that made 64 ms look safe is what is wrong.
-"Fresh input never waits for either timer" is true, and a harness driving the real server with a
-100 Hz input stream against the Deck's 6 ms `bInterval` measured the same completion cadence either
-way — 67 completions and a 10.5 ms longest gap in 400 ms, at both settings and at every
-`GOMAXPROCS`. The device disagrees, so the harness is not modelling what the real host and Steam do
-with the stream. Do not raise this default again on a cadence measurement; raise it only against the
-consumer that will actually read the reports.
+The mechanism: Steam integrates the Deck's gyro per report, as SDL's Deck driver does, advancing its
+sensor clock a fixed step per packet, so a `bInterval` without a report is motion that never
+happens. A moving gyro whose encoded value briefly repeats counts as idle to this timer, and the
+client skips frames that did not change, so the pause lands in the middle of a movement. "Fresh
+input never waits for either timer" was true and beside the point, and the harness that measured
+the same completion cadence at both settings was counting completions rather than looking at when
+they landed. Do not raise this default for a device whose consumer streams motion.
+
+## Completions on the poll grid
+
+A paced endpoint completes each URB at its poll time with whatever state it has then. Fresh input
+that landed since the last poll goes out at once; input that lands after a poll rides the next one,
+at most one `bInterval` later, which is the latency of the hardware being emulated.
+
+Until 2026-09-26 the worker paced a URB to the `bInterval` and then waited up to another `bInterval`
+for fresh input, completing the moment it arrived. That put the report stream on the consumer's
+sample cadence instead of the endpoint's, and when the two do not divide, the host sees a held
+report and a fresh one a fraction of a millisecond apart every few samples. Measured with a raw HID
+handle on the virtual Deck next to live Steam, with a 125 Hz gyro on the 6 ms endpoint: 60 % of the
+gaps were 8 ms, a quarter of all reports arrived under 3 ms after the previous one, and those
+carried the packet number the host had already seen. That was the gyro microstutter. It had been
+hidden while the client submitted every pad report unconditionally, because a signal was then
+pending at nearly every poll; skipping unchanged frames exposed it. `TestCompletionsStayOnTheEndpointGrid`
+in `internal/server/usb` covers the cadence and the counter.
 
 ## Data-driven completions
 
-A device that implements `usb.InterruptInSource` is served without a call per poll. The server owns
-the endpoint's poll timer and its completion frame: it waits on the device's own input channel and a
-timer it reuses, and an endpoint whose state has not changed is completed straight from the frame it
-already holds, with the sequence number written over the header in place.
+A device that implements `usb.InterruptInSource` is served without a blocking call per poll. The
+server owns the endpoint's poll timer and its completion frame: it waits on the device's own input
+channel and a timer it reuses, and completes each URB by having the device encode its current state
+into that frame. The encode is called once per report on the wire, changed state or not, so the
+Steam Deck advances its packet number there, the way its firmware numbers every report it sends.
 
 That removes, per completion, a context with a deadline, a context with a cancel, a report
 allocation inside the device and the copy into the server's replay cache. On the same machine an
@@ -85,8 +104,11 @@ unexplained scheduling change on the input path is not worth an idle saving.
 
 The library was compiled and measured with the harness above, and the two pacing changes were then
 A/B tested one at a time on an MSI Claw 8 AI+ against live Steam, which is what found the stutter
-and told the two apart. Rumble is still the maintainer's manual check.
+and told the two apart. The grid completion was then measured the same way, by timestamping the
+reports a raw HID handle receives from the virtual Deck next to Steam while the device moves.
+Rumble is still the maintainer's manual check.
 
 Take the harness numbers for what they are: allocation and cycle counts per completion, measured
 against a test client. They did not predict what a real host and Steam do with a slowed report
-stream, and on the one occasion that mattered they pointed the wrong way.
+stream, and on the one occasion that mattered they pointed the wrong way. What the consumer sees is
+the timing of each report, and that is what to record.

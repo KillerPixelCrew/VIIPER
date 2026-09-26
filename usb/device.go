@@ -16,9 +16,9 @@ type Device interface {
 }
 
 // InterruptInSource is an optional interface for devices whose interrupt-IN endpoints can be
-// served without a call per poll. The server then owns the poll timer and the completion frame:
-// an endpoint whose state has not changed since its last report is completed by sending that
-// report again, with no allocation, no context per URB and no call into the device.
+// served without a context, an allocation or a blocking call per poll. The server then owns the
+// poll timer and the completion frame, and completes each URB on the endpoint's poll cadence by
+// asking the device to encode its current state into that frame.
 //
 // A device that implements it keeps HandleTransfer for its OUT endpoints, for bulk endpoints and
 // for any interrupt-IN endpoint it declines here.
@@ -31,8 +31,9 @@ type InterruptInSource interface {
 	// endpoint to NAK when idle, otherwise the server uses HandleTransfer for it instead.
 	InputSignal(ep uint32) <-chan struct{}
 	// WriteInputReport encodes the endpoint's current input state into buf and returns its
-	// length. false means the endpoint has nothing to report right now, and the URB stays
-	// pending.
+	// length. It is called once per report on the wire, whether or not the state changed, so a
+	// device with a per-report counter advances it here. false means the endpoint has nothing to
+	// report right now, and the URB stays pending.
 	WriteInputReport(ep uint32, buf []byte) (int, bool)
 }
 

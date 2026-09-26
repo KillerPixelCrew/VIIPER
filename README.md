@@ -251,8 +251,8 @@ The `wsgm` branch tracks Alia5/VIIPER `main` by merging it; `NOTICE.md` lists wh
 ### Endpoint idle policy
 
 The downstream branch leaves the Steam Deck keyboard and mouse placeholder requests pending without
-recurring keepalive timers, and paces the repeat of an unchanged report once an endpoint has gone
-quiet, so an untouched controller stops costing a socket write every `bInterval`. Fresh input is
-still completed the moment it arrives. See
+recurring keepalive timers, completes a paced interrupt-IN endpoint on its `bInterval` grid with the
+state it has at each poll, the way a host reads real hardware, and can pace the repeat of an
+unchanged report once an endpoint has gone quiet. See
 [the idle endpoint notes](docs/wsgm-idle-endpoints.md) for the policy, the numbers and the
 validation status.

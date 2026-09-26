@@ -720,9 +720,9 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 	// written as a single syscall) and its endpoint's last report, sent again on bInterval expiry
 	// with no fresh input so the host still sees its poll-rate keepalive.
 	//
-	// A device that implements usb.InterruptInSource is served without a call per poll: the
-	// worker waits on the endpoint's own input channel and a reusable timer, and an endpoint
-	// whose state has not changed is completed straight from the frame it already holds. Every
+	// A device that implements usb.InterruptInSource is served without a context or allocation
+	// per poll: the worker waits on the endpoint's own input channel and a reusable timer, and
+	// completes each URB by encoding the endpoint's current state into the frame it owns. Every
 	// other device goes through HandleTransfer with a context per URB.
 	type inJob struct {
 		seq uint32
@@ -850,11 +850,10 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 				defer recoverWorker()
 				frame := make([]byte, usbip.HeaderSize+maxInterruptPayload)
 				payload := frame[usbip.HeaderSize:]
-				payloadLen := 0
-				havePayload := false
 				// repeated tracks whether the last completion already carried a report the host
 				// had seen, which is what puts the endpoint on the idle interval.
 				repeated := false
+				completed := false
 				poll := time.NewTimer(time.Hour)
 				if !poll.Stop() {
 					<-poll.C
@@ -871,38 +870,57 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 						return
 					}
 					polling := !nakIdle && interval > 0
+
+					// How long this URB may wait for fresh input before the report goes out with
+					// the state on hand.
+					//
+					// With hardware pacing, pace has just waited out the bInterval, so the poll is
+					// now and the wait is zero: the endpoint reports on its own grid with whatever
+					// state it has, the way a host poll reads a real device, and input that lands
+					// after this poll rides the next one. Completing the moment input arrives
+					// instead would put the report stream on the consumer's sample cadence, and
+					// when that cadence does not divide the bInterval the host sees a held report
+					// and a fresh one a fraction of a millisecond apart every few samples. Against
+					// live Steam that was a gyro microstutter: with a 125 Hz gyro on the 6 ms Deck
+					// endpoint, a quarter of all reports arrived under 3 ms after the previous one
+					// (2026-09-26). Only an endpoint that has already repeated itself waits
+					// longer, for the rest of the idle interval, and fresh input ends that wait.
+					//
+					// Without hardware pacing the poll interval itself is the wait, as before.
+					var wait time.Duration
 					if polling {
-						wait := interval
-						if repeated {
+						switch {
+						case !hwPaced && repeated:
 							wait = idleInterval
+						case !hwPaced:
+							wait = interval
+						case repeated && idleInterval > interval:
+							wait = idleInterval - interval
 						}
-						poll.Reset(wait)
 					}
-					send := false
-				wait:
-					for {
+					fresh, send := false, false
+					if polling && wait == 0 {
 						select {
 						case <-signal:
-							// Fresh input: encode it over the frame the endpoint holds.
-							if n, ok := source.WriteInputReport(ep, payload); ok {
-								payloadLen, havePayload = n, true
-								send, repeated = true, false
-								break wait
-							}
+							fresh = true
+						default:
+						}
+						send = true
+					}
+					armed := false
+					if !send && polling {
+						poll.Reset(wait)
+						armed = true
+					}
+				wait:
+					for !send {
+						select {
+						case <-signal:
+							fresh, send = true, true
 						case <-poll.C:
-							polling = false
-							// The poll interval expired with no fresh input: the host gets the
-							// report this endpoint already holds, which is what its bInterval
-							// promises. The first URB has none yet, so it is built here.
-							if havePayload {
-								send, repeated = true, true
-								break wait
-							}
-							if n, ok := source.WriteInputReport(ep, payload); ok {
-								payloadLen, havePayload = n, true
-								send = true
-							}
-							break wait
+							// The wait ended with no fresh input: the host gets the state the
+							// endpoint has, which is what its bInterval promises.
+							armed, send = false, true
 						case <-wake:
 							// An UNLINK landed on this endpoint; it may be this URB.
 							if !stillPending(job.seq) {
@@ -915,13 +933,21 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 							return
 						}
 					}
-					if polling && !poll.Stop() {
+					if armed && !poll.Stop() {
 						<-poll.C
 					}
-					if !send || !takePending(job.seq) {
+					if !send {
 						continue
 					}
-					complete(frame, job.seq, payloadLen)
+					// Every completion encodes the current state, so the device stamps each report
+					// the way its firmware would, whether or not the state behind it changed.
+					n, ok := source.WriteInputReport(ep, payload)
+					if !ok || !takePending(job.seq) {
+						continue
+					}
+					repeated = completed && !fresh
+					completed = true
+					complete(frame, job.seq, n)
 				}
 			}()
 			return endpoint

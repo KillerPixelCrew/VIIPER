@@ -16,8 +16,9 @@ import (
 )
 
 // These cover the data-driven interrupt-IN path the Steam Deck is served by: a URB is in flight
-// while it is in the server's pending map rather than while a context per URB is unexpired, and
-// the repeat of a report the host already has is paced separately from the endpoint's bInterval.
+// while it is in the server's pending map rather than while a context per URB is unexpired, a
+// paced endpoint completes on its bInterval grid with the state it has, and the repeat of a
+// report the host already has can be paced separately from the endpoint's bInterval.
 
 const (
 	deckControllerEndpoint = 3
@@ -271,5 +272,56 @@ func TestFreshInputIsNotHeldByTheIdleInterval(t *testing.T) {
 	}
 	if x := int16(binary.LittleEndian.Uint16(got.payload[48:50])); x != 1234 {
 		t.Fatalf("left stick X = %d, want 1234", x)
+	}
+}
+
+// A polled endpoint reports on its bInterval grid, not on the consumer's sample cadence, and
+// numbers every report it sends. With input every 8 ms on the Deck's 6 ms endpoint the worker
+// used to complete the moment a sample landed, so the host saw a held report and a fresh one a
+// fraction of a millisecond apart every few samples, the held one carrying the packet number it
+// had already seen. Against live Steam that was a gyro microstutter (2026-09-26).
+func TestCompletionsStayOnTheEndpointGrid(t *testing.T) {
+	stream := newDeckStream(t, 0)
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var state steamdeck.InputState
+		ticker := time.NewTicker(8 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				state.LStickX++
+				stream.deck.UpdateInputState(&state)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	defer func() {
+		close(stop)
+		<-done
+	}()
+
+	var last time.Time
+	var lastPacket uint32
+	for i := range 60 {
+		stream.submitIn(deckControllerEndpoint)
+		got, ok := stream.read(2 * time.Second)
+		if !ok {
+			t.Fatalf("URB %d did not complete", i)
+		}
+		now := time.Now()
+		packet := binary.LittleEndian.Uint32(got.payload[4:8])
+		if i > 0 {
+			if gap := now.Sub(last); gap < deckInterval/2 {
+				t.Fatalf("report %d arrived %v after the previous one, so the endpoint followed its input instead of its bInterval", i, gap)
+			}
+			if packet != lastPacket+1 {
+				t.Fatalf("report %d carries packet number %d after %d; the counter moves once per report", i, packet, lastPacket)
+			}
+		}
+		last, lastPacket = now, packet
 	}
 }

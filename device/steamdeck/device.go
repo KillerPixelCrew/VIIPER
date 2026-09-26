@@ -143,8 +143,15 @@ func (d *SteamDeck) UpdateInputState(state *InputState) {
 		return
 	}
 	d.inputState = *state
-	d.inputState.Frame = atomic.AddUint32(&d.frame, 1)
 	d.gate.Signal()
+}
+
+// nextFrame advances the packet number. The firmware counts reports, not state changes: every
+// report it sends carries the next number, and Steam reads the counter on that footing, so a
+// report that repeats unchanged state still moves it. The counter a client may have written into
+// its own frame is ignored, as it always was.
+func (d *SteamDeck) nextFrame() uint32 {
+	return atomic.AddUint32(&d.frame, 1)
 }
 
 // NaksWhenIdleForEndpoint keeps unused keyboard/mouse interfaces asleep without
@@ -163,7 +170,8 @@ func (d *SteamDeck) InputSignal(ep uint32) <-chan struct{} {
 	return d.gate.C()
 }
 
-// WriteInputReport encodes the controller endpoint's current state without allocating.
+// WriteInputReport encodes the controller endpoint's current state without allocating. Each call
+// is one report on the wire and takes the next packet number.
 func (d *SteamDeck) WriteInputReport(ep uint32, buf []byte) (int, bool) {
 	if ep != controllerEndpointNumber || len(buf) < InputReportLen {
 		return 0, false
@@ -171,7 +179,7 @@ func (d *SteamDeck) WriteInputReport(ep uint32, buf []byte) (int, bool) {
 	d.stateMu.Lock()
 	st := d.inputState
 	d.stateMu.Unlock()
-	st.writeReport(buf, st.Frame, DeckInputPayloadLen)
+	st.writeReport(buf, d.nextFrame(), DeckInputPayloadLen)
 	return InputReportLen, true
 }
 
@@ -190,7 +198,7 @@ func (d *SteamDeck) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 			d.stateMu.Lock()
 			st := d.inputState
 			d.stateMu.Unlock()
-			return st.buildReport(st.Frame, DeckInputPayloadLen)
+			return st.buildReport(d.nextFrame(), DeckInputPayloadLen)
 		default:
 			return nil
 		}
@@ -220,7 +228,8 @@ func (d *SteamDeck) HandleControl(bmRequestType, bRequest uint8, wValue, _ /* wI
 			d.stateMu.Lock()
 			st := d.inputState
 			d.stateMu.Unlock()
-			report := st.buildReport(st.Frame, DeckInputPayloadLen)
+			// GET_REPORT reads the current state without advancing the interrupt stream's counter.
+			report := st.buildReport(atomic.LoadUint32(&d.frame), DeckInputPayloadLen)
 			if wLength > 0 && int(wLength) < len(report) {
 				return report[:wLength], true
 			}

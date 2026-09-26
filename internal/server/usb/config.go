@@ -34,9 +34,10 @@ type ServerConfig struct {
 	// the moment real input arrives. Values below the endpoint's bInterval, and 0, mean every
 	// bInterval.
 	//
-	// It defaults to 0 because 64 ms made the gyro stutter on an MSI Claw and a ROG Ally, which
-	// a device-level A/B pinned to this setting alone (2026-09-26). Fresh input never waits for
-	// the timer, so the cause is not input latency and is not yet understood; opt in to a slower
-	// repeat only where it has been measured on the consumer that will see it.
+	// It defaults to 0 because a consumer that streams motion cannot tell a paused repeat from a
+	// stalled controller: Steam integrates the Deck's gyro per report, so every bInterval without
+	// a report is motion that never happens. 64 ms made the gyro stutter on an MSI Claw and a
+	// ROG Ally (2026-09-26). Opt in to a slower repeat only for a device whose consumer has been
+	// checked with it.
 	IdleKeepaliveInterval time.Duration `help:"How often an unchanged interrupt-IN report is repeated once an endpoint is idle" default:"0" env:"VIIPER_IDLE_KEEPALIVE_INTERVAL"`
 }

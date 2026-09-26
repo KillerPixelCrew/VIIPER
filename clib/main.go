@@ -339,11 +339,9 @@ func idleModeFromEnv() string {
 //
 // It defaulted to 64 ms, on the reasoning that repeating a report nothing consumed is pure cost
 // for a controller no one is touching, and that fresh input never waits for the timer anyway.
-// The gyro stuttered on an MSI Claw and a ROG Ally, and a device-level A/B pinned it to exactly
-// this: at 6 ms the stutter goes, at 64 ms it comes back, with nothing else changed
-// (2026-09-26). A harness that measured completion cadence under a 100 Hz input stream saw no
-// difference between the two, so whatever the mechanism is, it is something the real host does
-// that the harness does not model. Until that is understood, the emulation repeats at the
+// The gyro stuttered on an MSI Claw and a ROG Ally (2026-09-26): Steam integrates the Deck's
+// gyro per report, so a bInterval without a report is motion that never happens, and a moving
+// gyro whose encoded value briefly repeats is "idle" to this timer. The emulation repeats at the
 // endpoint's bInterval like the hardware it stands in for.
 //
 // VIIPER_IDLE_KEEPALIVE_INTERVAL takes a Go duration and still sets a slower repeat.
