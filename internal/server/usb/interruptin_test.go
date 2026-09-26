@@ -107,7 +107,7 @@ func (s *deckStream) submitIn(ep uint32) uint32 {
 	return seq
 }
 
-func (s *deckStream) unlink(target uint32) uint32 {
+func (s *deckStream) unlink(target uint32) {
 	s.t.Helper()
 	seq := s.nextIn
 	s.nextIn++
@@ -118,7 +118,6 @@ func (s *deckStream) unlink(target uint32) uint32 {
 	if err := cmd.Write(s.conn); err != nil {
 		s.t.Fatal(err)
 	}
-	return seq
 }
 
 type reply struct {
