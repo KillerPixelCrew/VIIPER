@@ -193,38 +193,33 @@ type CmdSubmit struct {
 	Setup             [8]byte
 }
 
+// HeaderSize is the wire size of every URB command and reply header.
+const HeaderSize = 0x30
+
+// put encodes the common header into the first 20 bytes of buf.
+func (h *HeaderBasic) put(buf []byte) {
+	binary.BigEndian.PutUint32(buf[0:4], h.Command)
+	binary.BigEndian.PutUint32(buf[4:8], h.Seqnum)
+	binary.BigEndian.PutUint32(buf[8:12], h.Devid)
+	binary.BigEndian.PutUint32(buf[12:16], h.Dir)
+	binary.BigEndian.PutUint32(buf[16:20], h.Ep)
+}
+
+// Encode writes the header into buf, which must hold HeaderSize bytes.
+func (c *CmdSubmit) Encode(buf []byte) {
+	c.Basic.put(buf)
+	binary.BigEndian.PutUint32(buf[20:24], c.TransferFlags)
+	binary.BigEndian.PutUint32(buf[24:28], c.TransferBufferLen)
+	binary.BigEndian.PutUint32(buf[28:32], c.StartFrame)
+	binary.BigEndian.PutUint32(buf[32:36], c.NumberOfPackets)
+	binary.BigEndian.PutUint32(buf[36:40], c.Interval)
+	copy(buf[40:48], c.Setup[:])
+}
+
 func (c *CmdSubmit) Write(w io.Writer) error {
-	if err := binary.Write(w, binary.BigEndian, c.Basic.Command); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.Basic.Seqnum); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.Basic.Devid); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.Basic.Dir); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.Basic.Ep); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.TransferFlags); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.TransferBufferLen); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.StartFrame); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.NumberOfPackets); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.Interval); err != nil {
-		return err
-	}
-	_, err := w.Write(c.Setup[:])
+	var buf [HeaderSize]byte
+	c.Encode(buf[:])
+	_, err := w.Write(buf[:])
 	return err
 }
 
@@ -239,38 +234,22 @@ type RetSubmit struct {
 	Padding         [8]byte
 }
 
+// Encode writes the header into buf, which must hold HeaderSize bytes. It is the completion
+// hot path, so it allocates nothing.
+func (r *RetSubmit) Encode(buf []byte) {
+	r.Basic.put(buf)
+	binary.BigEndian.PutUint32(buf[20:24], uint32(r.Status))
+	binary.BigEndian.PutUint32(buf[24:28], r.ActualLength)
+	binary.BigEndian.PutUint32(buf[28:32], r.StartFrame)
+	binary.BigEndian.PutUint32(buf[32:36], r.NumberOfPackets)
+	binary.BigEndian.PutUint32(buf[36:40], r.ErrorCount)
+	copy(buf[40:48], r.Padding[:])
+}
+
 func (r *RetSubmit) Write(w io.Writer) error {
-	if err := binary.Write(w, binary.BigEndian, r.Basic.Command); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.Basic.Seqnum); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.Basic.Devid); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.Basic.Dir); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.Basic.Ep); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.Status); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.ActualLength); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.StartFrame); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.NumberOfPackets); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.ErrorCount); err != nil {
-		return err
-	}
-	_, err := w.Write(r.Padding[:])
+	var buf [HeaderSize]byte
+	r.Encode(buf[:])
+	_, err := w.Write(buf[:])
 	return err
 }
 
@@ -288,48 +267,20 @@ type RetUnlink struct {
 }
 
 func (c *CmdUnlink) Write(w io.Writer) error {
-	if err := binary.Write(w, binary.BigEndian, c.Basic.Command); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.Basic.Seqnum); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.Basic.Devid); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.Basic.Dir); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.Basic.Ep); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, c.UnlinkSeqnum); err != nil {
-		return err
-	}
-	_, err := w.Write(c.Padding[:])
+	var buf [HeaderSize]byte
+	c.Basic.put(buf[:])
+	binary.BigEndian.PutUint32(buf[20:24], c.UnlinkSeqnum)
+	copy(buf[24:48], c.Padding[:])
+	_, err := w.Write(buf[:])
 	return err
 }
 
 func (r *RetUnlink) Write(w io.Writer) error {
-	if err := binary.Write(w, binary.BigEndian, r.Basic.Command); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.Basic.Seqnum); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.Basic.Devid); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.Basic.Dir); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.Basic.Ep); err != nil {
-		return err
-	}
-	if err := binary.Write(w, binary.BigEndian, r.Status); err != nil {
-		return err
-	}
-	_, err := w.Write(r.Padding[:])
+	var buf [HeaderSize]byte
+	r.Basic.put(buf[:])
+	binary.BigEndian.PutUint32(buf[20:24], uint32(r.Status))
+	copy(buf[24:48], r.Padding[:])
+	_, err := w.Write(buf[:])
 	return err
 }
 

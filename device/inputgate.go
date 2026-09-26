@@ -34,6 +34,16 @@ func (g *InputGate) Signal() {
 	}
 }
 
+// C returns the gate's coalescing signal channel, for a caller that selects on it together with
+// its own timer instead of calling Wait. A nil gate has no channel, and a receive on the nil
+// channel blocks, which is what a device without input wants.
+func (g *InputGate) C() <-chan struct{} {
+	if g == nil {
+		return nil
+	}
+	return g.ch
+}
+
 // GateResult is the outcome of waiting for input.
 type GateResult int
 

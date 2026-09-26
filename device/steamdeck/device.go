@@ -24,8 +24,10 @@ const (
 )
 
 type SteamDeck struct {
-	gate                *device.InputGate
-	inputState          *InputState
+	gate *device.InputGate
+	// inputState is stored by value so an update does not allocate; readers copy it under
+	// stateMu.
+	inputState          InputState
 	stateMu             sync.Mutex
 	featureMu           sync.Mutex
 	outputFunc          func(OutputState)
@@ -115,7 +117,6 @@ func New(o *device.CreateOptions) (*SteamDeck, error) {
 	d := &SteamDeck{
 		gate:       device.NewInputGate(),
 		descriptor: cloneDescriptor(),
-		inputState: &InputState{},
 		controller: newControllerState(),
 	}
 	if o != nil {
@@ -137,13 +138,12 @@ func (d *SteamDeck) UpdateInputState(state *InputState) {
 	d.stateMu.Lock()
 	defer d.stateMu.Unlock()
 	if state == nil {
-		d.inputState = &InputState{}
+		d.inputState = InputState{}
 		d.gate.Signal()
 		return
 	}
-	st := *state
-	st.Frame = atomic.AddUint32(&d.frame, 1)
-	d.inputState = &st
+	d.inputState = *state
+	d.inputState.Frame = atomic.AddUint32(&d.frame, 1)
 	d.gate.Signal()
 }
 
@@ -151,6 +151,28 @@ func (d *SteamDeck) UpdateInputState(state *InputState) {
 // changing the controller endpoint's continuous report stream.
 func (d *SteamDeck) NaksWhenIdleForEndpoint(ep uint32) bool {
 	return ep == keyboardEndpointNumber || ep == mouseEndpointNumber
+}
+
+// InputSignal serves the controller endpoint from the input gate, so the server can poll it
+// without a call per URB. The keyboard and mouse endpoints are descriptor placeholders with no
+// input of their own; a nil channel leaves their URBs pending, which is what they did before.
+func (d *SteamDeck) InputSignal(ep uint32) <-chan struct{} {
+	if ep != controllerEndpointNumber {
+		return nil
+	}
+	return d.gate.C()
+}
+
+// WriteInputReport encodes the controller endpoint's current state without allocating.
+func (d *SteamDeck) WriteInputReport(ep uint32, buf []byte) (int, bool) {
+	if ep != controllerEndpointNumber || len(buf) < InputReportLen {
+		return 0, false
+	}
+	d.stateMu.Lock()
+	st := d.inputState
+	d.stateMu.Unlock()
+	st.writeReport(buf, st.Frame, DeckInputPayloadLen)
+	return InputReportLen, true
 }
 
 func (d *SteamDeck) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
@@ -166,7 +188,7 @@ func (d *SteamDeck) HandleTransfer(ctx context.Context, ep uint32, dir uint32, o
 				return nil
 			}
 			d.stateMu.Lock()
-			st := *d.inputState
+			st := d.inputState
 			d.stateMu.Unlock()
 			return st.buildReport(st.Frame, DeckInputPayloadLen)
 		default:
@@ -196,7 +218,7 @@ func (d *SteamDeck) HandleControl(bmRequestType, bRequest uint8, wValue, _ /* wI
 		switch reportType {
 		case reportTypeInput:
 			d.stateMu.Lock()
-			st := *d.inputState
+			st := d.inputState
 			d.stateMu.Unlock()
 			report := st.buildReport(st.Frame, DeckInputPayloadLen)
 			if wLength > 0 && int(wLength) < len(report) {

@@ -35,11 +35,14 @@ type batchingWriter struct {
 }
 
 const (
-	retSubmitHeaderSize = 0x30
-
 	// avoid windows socket overhead while keeping latency very low.
 	writeBatcherBufferSize   = 256 * 1024
 	writeBatcherFlushAtBytes = 64 * 1024
+
+	// maxInterruptPayload sizes each endpoint worker's reusable completion frame. It is one
+	// allocation per endpoint for the life of the URB stream, so it is generous enough that no
+	// HID report has to be split or re-allocated.
+	maxInterruptPayload = 1024
 )
 
 func newBatchingWriter(dst io.Writer, bufSize int, flushEvery time.Duration, flushAtBytes int) *batchingWriter {
@@ -644,8 +647,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 	// completions can interleave with the synchronous EP0/OUT path below —
 	// writeRet serializes the wire writes.
 	var writeMu sync.Mutex
-	var retOut bytes.Buffer
-	retOut.Grow(retSubmitHeaderSize)
+	retOut := make([]byte, usbip.HeaderSize, usbip.HeaderSize+64)
 	writeRet := func(seq uint32, status int32, actualLen uint32, respData []byte, flush bool) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
@@ -657,17 +659,10 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			NumberOfPackets: 0,
 			ErrorCount:      0,
 		}
-		retOut.Reset()
-		if err := ret.Write(&retOut); err != nil {
-			return fmt.Errorf("build RET_SUBMIT header: %w", err)
-		}
-		if _, err := writer.Write(retOut.Bytes()); err != nil {
+		ret.Encode(retOut[:usbip.HeaderSize])
+		retOut = append(retOut[:usbip.HeaderSize], respData...)
+		if _, err := writer.Write(retOut); err != nil {
 			return fmt.Errorf("write RET_SUBMIT: %w", err)
-		}
-		if len(respData) > 0 {
-			if _, err := writer.Write(respData); err != nil {
-				return fmt.Errorf("write RET_SUBMIT payload: %w", err)
-			}
 		}
 		if flush && bw != nil {
 			if err := bw.Flush(); err != nil {
@@ -677,95 +672,282 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		return nil
 	}
 
-	// In-flight interrupt-IN URBs by seqnum, so UNLINK can cancel them.
+	// In-flight interrupt-IN URBs by seqnum, so UNLINK can cancel them. A URB is unlinked by
+	// removing it from here: its worker takes it out of the map before completing it and drops
+	// one that is already gone. Only the generic worker below waits on a context per URB and
+	// records its cancel; the data-driven worker is woken through its endpoint instead.
+	type pendingURB struct {
+		ep     uint32
+		cancel context.CancelFunc
+	}
 	var pendingMu sync.Mutex
-	pending := map[uint32]context.CancelFunc{}
+	pending := map[uint32]pendingURB{}
 	defer func() {
 		pendingMu.Lock()
-		for _, cancel := range pending {
-			cancel()
+		for _, urb := range pending {
+			if urb.cancel != nil {
+				urb.cancel()
+			}
 		}
+		clear(pending)
 		pendingMu.Unlock()
 	}()
+	// takePending removes a URB and reports whether it was still in flight. One that is gone was
+	// unlinked or belongs to a stream being torn down, and must not be completed.
+	takePending := func(seq uint32) bool {
+		pendingMu.Lock()
+		_, ok := pending[seq]
+		if ok {
+			delete(pending, seq)
+		}
+		pendingMu.Unlock()
+		return ok
+	}
+	stillPending := func(seq uint32) bool {
+		pendingMu.Lock()
+		_, ok := pending[seq]
+		pendingMu.Unlock()
+		return ok
+	}
 
-	// Persistent per-endpoint completion workers: one goroutine per
-	// interrupt-IN endpoint for the lifetime of the URB stream, fed by a
-	// small job queue, instead of one goroutine per URB. Each worker owns a
-	// reusable frame buffer (RET_SUBMIT header + payload assembled and
-	// written as a single syscall) and its endpoint's last-response cache
-	// (replayed on bInterval expiry with no fresh input, so the host still
-	// sees its poll-rate keepalive).
+	// streamDone releases the endpoint workers when the URB stream ends for any reason, including
+	// a read error on a connection whose device is still present.
+	streamDone := make(chan struct{})
+
+	// Persistent per-endpoint completion workers: one goroutine per interrupt-IN endpoint for the
+	// lifetime of the URB stream, fed by a small job queue, instead of one goroutine per URB.
+	// Each worker owns a reusable frame buffer (RET_SUBMIT header and payload assembled and
+	// written as a single syscall) and its endpoint's last report, sent again on bInterval expiry
+	// with no fresh input so the host still sees its poll-rate keepalive.
+	//
+	// A device that implements usb.InterruptInSource is served without a call per poll: the
+	// worker waits on the endpoint's own input channel and a reusable timer, and an endpoint
+	// whose state has not changed is completed straight from the frame it already holds. Every
+	// other device goes through HandleTransfer with a context per URB.
 	type inJob struct {
-		seq    uint32
+		seq uint32
+		// ctx and cancel are set on the generic path only, where the device waits on them.
 		ctx    context.Context
 		cancel context.CancelFunc
 	}
-	inWorkers := map[uint32]chan inJob{}
+	type inEndpoint struct {
+		jobs chan inJob
+		// wake releases a data-driven worker that is waiting, so an UNLINK does not sit out the
+		// poll interval. It is nil on the generic path, which cancels the URB's context instead.
+		wake chan struct{}
+	}
+	inEndpoints := map[uint32]*inEndpoint{}
 	defer func() {
-		for _, ch := range inWorkers {
-			close(ch)
+		close(streamDone)
+		for _, endpoint := range inEndpoints {
+			close(endpoint.jobs)
 		}
 	}()
-	startInWorker := func(ep uint32) chan inJob {
-		jobs := make(chan inJob, 8)
+	startInWorker := func(ep uint32) *inEndpoint {
+		endpoint := &inEndpoint{jobs: make(chan inJob, 8)}
+		jobs := endpoint.jobs
 		interval := endpointInterval(dev.GetDescriptor(), ep)
 		hwPaced := s.config.HardwarePacedCompletions && interval > 0
-		// NAK-idle: no per-attempt deadline — the device blocks on its gate
-		// until real input (the pacer still enforces bInterval spacing), so
-		// nothing is replayed and idle endpoints stay dormant. In "auto" the
-		// device can declare this per endpoint or for the whole device.
+		// NAK-idle: no poll deadline — the endpoint stays pending until real input (the pacer
+		// still enforces bInterval spacing), so nothing is replayed and idle endpoints stay
+		// dormant. In "auto" the device can declare this per endpoint or for the whole device.
 		nakIdle := interruptInNAKIdle(dev, ep, s.config.IdleMode)
-		go func() {
-			// A panicking worker ends the stream: the connection is closed so the reader
-			// returns, and the queue is drained so a sender blocked on it is released.
-			defer func() {
-				if r := recover(); r != nil {
-					logPanic(s.logger, "interrupt-IN worker", r)
-					_ = conn.Close()
-					for range jobs {
+		// How long a keepalive endpoint waits before repeating a report the host already has.
+		// The first repeat still comes one bInterval after the last fresh input, so a device
+		// that streams looks unchanged to a consumer watching the report rate; only an endpoint
+		// that has already gone quiet slows down.
+		idleInterval := s.config.IdleKeepaliveInterval
+		if idleInterval < interval {
+			idleInterval = interval
+		}
+
+		// Hardware pacing: completions are held to the endpoint's poll cadence (anchored,
+		// drift-free). The input gate coalesces updates that land between polls, latest state
+		// wins — the same thing a real controller's bInterval does. nextDue and the pacer belong
+		// to the one worker started here.
+		var nextDue time.Time
+		var pacer *time.Timer
+		if hwPaced {
+			pacer = time.NewTimer(time.Hour)
+			if !pacer.Stop() {
+				<-pacer.C
+			}
+		}
+		// pace waits out the rest of the endpoint's poll interval before the next completion is
+		// even considered. It reports false when that wait was cut short.
+		pace := func(cancelled <-chan struct{}) bool {
+			if !hwPaced {
+				return true
+			}
+			now := time.Now()
+			if !nextDue.IsZero() && nextDue.After(now) {
+				pacer.Reset(nextDue.Sub(now))
+				select {
+				case <-pacer.C:
+				case <-cancelled:
+					if !pacer.Stop() {
+						<-pacer.C
 					}
-				}
-			}()
-			var frame bytes.Buffer
-			var last []byte
-			haveLast := false
-			// Hardware pacing: completions are held to the endpoint's poll
-			// cadence (anchored, drift-free). The input gate coalesces
-			// updates that land between polls, latest state wins — the same
-			// thing a real controller's bInterval does.
-			var nextDue time.Time
-			var pacer *time.Timer
-			if hwPaced {
-				pacer = time.NewTimer(time.Hour)
-				if !pacer.Stop() {
-					<-pacer.C
+					return false
 				}
 			}
-			for job := range jobs {
-				if hwPaced {
-					now := time.Now()
-					if !nextDue.IsZero() && nextDue.After(now) {
-						pacer.Reset(nextDue.Sub(now))
+			now = time.Now()
+			if nextDue.IsZero() || nextDue.Add(interval).Before(now) {
+				nextDue = now.Add(interval)
+			} else {
+				nextDue = nextDue.Add(interval)
+			}
+			return true
+		}
+		// A panicking worker ends the stream: the connection is closed so the reader returns, and
+		// the queue is drained so a sender blocked on it is released.
+		recoverWorker := func() {
+			if r := recover(); r != nil {
+				logPanic(s.logger, "interrupt-IN worker", r)
+				_ = conn.Close()
+				for range jobs {
+				}
+			}
+		}
+		// complete writes one RET_SUBMIT with its payload as a single syscall.
+		complete := func(frame []byte, seq uint32, payloadLen int) {
+			ret := usbip.RetSubmit{
+				Basic:           usbip.HeaderBasic{Command: usbip.RetSubmitCode, Seqnum: seq, Devid: 0, Dir: 0, Ep: 0},
+				Status:          0,
+				ActualLength:    uint32(payloadLen),
+				StartFrame:      0,
+				NumberOfPackets: 0,
+				ErrorCount:      0,
+			}
+			ret.Encode(frame[:usbip.HeaderSize])
+			writeMu.Lock()
+			_, werr := writer.Write(frame[:usbip.HeaderSize+payloadLen])
+			if werr == nil && bw != nil {
+				werr = bw.Flush()
+			}
+			writeMu.Unlock()
+			if werr != nil {
+				if isClientDisconnect(werr) {
+					s.logger.Debug("URB completion after disconnect", "seq", seq, "error", werr)
+				} else {
+					s.logger.Error("write async RET_SUBMIT", "seq", seq, "error", werr)
+				}
+			}
+		}
+
+		source, _ := dev.(usb.InterruptInSource)
+		var signal <-chan struct{}
+		if source != nil {
+			signal = source.InputSignal(ep)
+		}
+		// An endpoint that offers no input channel can be served this way only when it may stay
+		// silent; with a poll deadline there would be nothing to build the first report from, so
+		// such an endpoint goes through HandleTransfer instead.
+		if source != nil && (signal != nil || nakIdle) {
+			endpoint.wake = make(chan struct{}, 1)
+			wake := endpoint.wake
+			go func() {
+				defer recoverWorker()
+				frame := make([]byte, usbip.HeaderSize+maxInterruptPayload)
+				payload := frame[usbip.HeaderSize:]
+				payloadLen := 0
+				havePayload := false
+				// repeated tracks whether the last completion already carried a report the host
+				// had seen, which is what puts the endpoint on the idle interval.
+				repeated := false
+				poll := time.NewTimer(time.Hour)
+				if !poll.Stop() {
+					<-poll.C
+				}
+				defer poll.Stop()
+
+				for job := range jobs {
+					if !stillPending(job.seq) {
+						// Unlinked before its turn came: waiting on it would hold up the URBs
+						// queued behind it, and in NAK-idle mode that wait has no deadline.
+						continue
+					}
+					if !pace(streamDone) {
+						return
+					}
+					polling := !nakIdle && interval > 0
+					if polling {
+						wait := interval
+						if repeated {
+							wait = idleInterval
+						}
+						poll.Reset(wait)
+					}
+					send := false
+				wait:
+					for {
 						select {
-						case <-pacer.C:
-						case <-job.ctx.Done():
-							if !pacer.Stop() {
-								<-pacer.C
+						case <-signal:
+							// Fresh input: encode it over the frame the endpoint holds.
+							if n, ok := source.WriteInputReport(ep, payload); ok {
+								payloadLen, havePayload = n, true
+								send, repeated = true, false
+								break wait
 							}
+						case <-poll.C:
+							polling = false
+							// The poll interval expired with no fresh input: the host gets the
+							// report this endpoint already holds, which is what its bInterval
+							// promises. The first URB has none yet, so it is built here.
+							if havePayload {
+								send, repeated = true, true
+								break wait
+							}
+							if n, ok := source.WriteInputReport(ep, payload); ok {
+								payloadLen, havePayload = n, true
+								send = true
+							}
+							break wait
+						case <-wake:
+							// An UNLINK landed on this endpoint; it may be this URB.
+							if !stillPending(job.seq) {
+								break wait
+							}
+						case <-ctx.Done():
+							// The device was removed; the stream ends with it.
+							return
+						case <-streamDone:
+							return
 						}
 					}
-					now = time.Now()
-					if nextDue.IsZero() || nextDue.Add(interval).Before(now) {
-						nextDue = now.Add(interval)
-					} else {
-						nextDue = nextDue.Add(interval)
+					if polling && !poll.Stop() {
+						<-poll.C
 					}
+					if !send || !takePending(job.seq) {
+						continue
+					}
+					complete(frame, job.seq, payloadLen)
+				}
+			}()
+			return endpoint
+		}
+
+		go func() {
+			defer recoverWorker()
+			frame := make([]byte, usbip.HeaderSize, usbip.HeaderSize+maxInterruptPayload)
+			var last []byte
+			haveLast := false
+			repeated := false
+			for job := range jobs {
+				if !pace(job.ctx.Done()) {
+					takePending(job.seq)
+					job.cancel()
+					continue
 				}
 				var respData []byte
 				for {
 					attemptCtx, attemptCancel := job.ctx, context.CancelFunc(func() {})
 					if !nakIdle && interval > 0 {
-						attemptCtx, attemptCancel = context.WithTimeout(job.ctx, interval)
+						wait := interval
+						if repeated {
+							wait = idleInterval
+						}
+						attemptCtx, attemptCancel = context.WithTimeout(job.ctx, wait)
 					}
 					respData = s.processSubmit(attemptCtx, dev, ep, usbip.DirIn, nil, nil)
 					expired := respData == nil && errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
@@ -778,11 +960,13 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 					if respData != nil {
 						last = append(last[:0], respData...)
 						haveLast = true
+						repeated = false
 						break
 					}
 					if expired {
 						if haveLast {
 							respData = last
+							repeated = true
 							break
 						}
 						continue
@@ -791,46 +975,18 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 					break
 				}
 
-				pendingMu.Lock()
-				delete(pending, job.seq)
-				pendingMu.Unlock()
+				unlinked := !takePending(job.seq)
 				job.cancel()
-
-				if job.ctx.Err() != nil && respData == nil {
+				if unlinked {
 					// Unlinked or stream torn down mid-wait: no completion.
 					continue
 				}
 
-				frame.Reset()
-				ret := usbip.RetSubmit{
-					Basic:           usbip.HeaderBasic{Command: usbip.RetSubmitCode, Seqnum: job.seq, Devid: 0, Dir: 0, Ep: 0},
-					Status:          0,
-					ActualLength:    uint32(len(respData)),
-					StartFrame:      0,
-					NumberOfPackets: 0,
-					ErrorCount:      0,
-				}
-				if err := ret.Write(&frame); err != nil {
-					s.logger.Error("build async RET_SUBMIT", "seq", job.seq, "error", err)
-					continue
-				}
-				frame.Write(respData)
-				writeMu.Lock()
-				_, werr := writer.Write(frame.Bytes())
-				if werr == nil && bw != nil {
-					werr = bw.Flush()
-				}
-				writeMu.Unlock()
-				if werr != nil {
-					if isClientDisconnect(werr) {
-						s.logger.Debug("URB completion after disconnect", "seq", job.seq, "error", werr)
-					} else {
-						s.logger.Error("write async RET_SUBMIT", "seq", job.seq, "error", werr)
-					}
-				}
+				frame = append(frame[:usbip.HeaderSize], respData...)
+				complete(frame, job.seq, len(respData))
 			}
 		}()
-		return jobs
+		return endpoint
 	}
 
 	var outPayloadScratch []byte
@@ -884,7 +1040,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			unlinkSeq := binary.BigEndian.Uint32(hdr[urbHdrOffsetUnlink : urbHdrOffsetUnlink+4])
 			s.logger.Debug("USBIP_CMD_UNLINK", "seq", seq, "unlink", unlinkSeq)
 			pendingMu.Lock()
-			cancel, found := pending[unlinkSeq]
+			urb, found := pending[unlinkSeq]
 			if found {
 				delete(pending, unlinkSeq)
 			}
@@ -893,7 +1049,14 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			// status 0 means it already completed normally.
 			status := int32(0)
 			if found {
-				cancel()
+				if urb.cancel != nil {
+					urb.cancel()
+				} else if endpoint := inEndpoints[urb.ep]; endpoint != nil {
+					select {
+					case endpoint.wake <- struct{}{}:
+					default:
+					}
+				}
 				status = errConnReset
 			}
 			ret := usbip.RetUnlink{Basic: usbip.HeaderBasic{Command: usbip.RetUnlinkCode, Seqnum: seq, Devid: 0, Dir: 0, Ep: 0}, Status: status}
@@ -924,19 +1087,25 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		}
 
 		if dir == usbip.DirIn && ep != 0 {
-			// Data-driven interrupt-IN: hand the URB to the endpoint's
-			// persistent worker, which completes it when the device produces
-			// FRESH input (or replays the last payload on bInterval expiry).
-			urbCtx, urbCancel := context.WithCancel(ctx)
-			pendingMu.Lock()
-			pending[seq] = urbCancel
-			pendingMu.Unlock()
-			jobs := inWorkers[ep]
-			if jobs == nil {
-				jobs = startInWorker(ep)
-				inWorkers[ep] = jobs
+			// Data-driven interrupt-IN: hand the URB to the endpoint's persistent worker, which
+			// completes it when the endpoint has FRESH input (or sends its last report again on
+			// bInterval expiry).
+			endpoint := inEndpoints[ep]
+			if endpoint == nil {
+				endpoint = startInWorker(ep)
+				inEndpoints[ep] = endpoint
 			}
-			jobs <- inJob{seq: seq, ctx: urbCtx, cancel: urbCancel}
+			job := inJob{seq: seq}
+			urb := pendingURB{ep: ep}
+			if endpoint.wake == nil {
+				// The generic worker hands the URB's context to the device.
+				job.ctx, job.cancel = context.WithCancel(ctx)
+				urb.cancel = job.cancel
+			}
+			pendingMu.Lock()
+			pending[seq] = urb
+			pendingMu.Unlock()
+			endpoint.jobs <- job
 			continue
 		}
 

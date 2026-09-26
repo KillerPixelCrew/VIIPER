@@ -26,4 +26,13 @@ type ServerConfig struct {
 	//   "nak": force NAK-idle for all devices (zero idle traffic).
 	//   "keepalive": force bInterval keepalive replays for all devices.
 	IdleMode string `help:"Idle interrupt-IN behavior: auto, nak, or keepalive" default:"auto" env:"VIIPER_IDLE_MODE"`
+	// IdleKeepaliveInterval paces the repeat of a report that has not changed. A keepalive
+	// endpoint sends its last report again whenever its poll interval passes with no fresh
+	// input, and for an untouched controller that is the whole cost of the emulation: one
+	// loopback write and one timer every bInterval, carrying bytes the host already has. After
+	// the first such repeat the endpoint waits this long instead, and returns to its bInterval
+	// the moment real input arrives. Fresh input never waits for either timer, so a longer idle
+	// interval costs no input latency. Values below the endpoint's bInterval, and 0, mean every
+	// bInterval as before.
+	IdleKeepaliveInterval time.Duration `help:"How often an unchanged interrupt-IN report is repeated once an endpoint is idle" default:"64ms" env:"VIIPER_IDLE_KEEPALIVE_INTERVAL"`
 }
