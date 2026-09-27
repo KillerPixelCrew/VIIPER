@@ -519,6 +519,11 @@ func viiper_bus_create(busID C.uint32_t) (rc C.int) {
 		return setError(err)
 	}
 
+	// The caller owns this bus: it lives until viiper_bus_remove or viiper_shutdown, however long
+	// it sits empty. The server's empty-bus cleanup is for buses the REST API creates on demand,
+	// and it deleted a C API bus five seconds after its device was removed, so a caller that took
+	// longer than that to add the next device got "bus not found" (WSGM, 2026-09-27).
+	bus.SetKeepWhenEmpty(true)
 	if err := server.AddBus(bus); err != nil {
 		_ = bus.Close()
 		return setError(err)

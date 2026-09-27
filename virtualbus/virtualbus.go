@@ -28,6 +28,7 @@ type VirtualBus struct {
 	devices         []busDevice
 	emptyCtx        context.Context
 	emptyCancel     context.CancelFunc
+	keepWhenEmpty   bool
 }
 
 // DeviceMeta exposes a registered device and its metadata for external queries.
@@ -135,6 +136,24 @@ func (vb *VirtualBus) BusID() uint32 {
 	vb.mtx.Lock()
 	defer vb.mtx.Unlock()
 	return vb.busID
+}
+
+// SetKeepWhenEmpty marks the bus as owned by its creator. The server's empty-bus cleanup skips
+// it, so it exists until RemoveBus or Close. A bus created through the C API is such a bus:
+// the caller removes and re-adds devices on it across its own lifecycle, and a bus that quietly
+// vanished five seconds after its last device left made the next device_add fail with "bus not
+// found" whenever the caller took longer than that (WSGM on an MSI Claw, 2026-09-27).
+func (vb *VirtualBus) SetKeepWhenEmpty(keep bool) {
+	vb.mtx.Lock()
+	defer vb.mtx.Unlock()
+	vb.keepWhenEmpty = keep
+}
+
+// KeepWhenEmpty reports whether the server must leave this bus in place once it is empty.
+func (vb *VirtualBus) KeepWhenEmpty() bool {
+	vb.mtx.Lock()
+	defer vb.mtx.Unlock()
+	return vb.keepWhenEmpty
 }
 
 // Devices returns all devices currently attached to this bus.

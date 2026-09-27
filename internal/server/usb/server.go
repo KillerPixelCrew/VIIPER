@@ -269,26 +269,21 @@ func (s *Server) RemoveDeviceByID(busID uint32, deviceID string) error {
 		return err
 	}
 
-	if emptyCtx := bus.GetBusEmptyContext(); emptyCtx != nil {
-		go func() {
-			defer recoverAndLog(s.logger, "bus cleanup")
-			slog.Debug("Started bus cleanup goroutine (RemoveDeviceByID)")
-			select {
-			case <-emptyCtx.Done():
-				// Cancelled - a new device was added
-				return
-			case <-time.After(s.config.BusCleanupTimeout):
-				if b := s.GetBus(busID); b != nil && len(b.Devices()) == 0 {
-					if err := s.RemoveBus(busID); err != nil {
-						s.logger.Error("timeout: failed to remove empty bus", "busID", busID, "error", err)
-					} else {
-						s.logger.Info("timeout: removed empty bus", "busID", busID)
-					}
-				}
-			}
-		}()
-	} else {
-		s.logger.Debug("No bus empty context; Cleaning bus immediately")
+	s.scheduleEmptyBusCleanup(bus, "RemoveDeviceByID")
+	return nil
+}
+
+// scheduleEmptyBusCleanup removes a bus that stays empty for BusCleanupTimeout, unless the bus is
+// marked to be kept or a device is added in the meantime. A bus created through the C API is kept:
+// its owner removes and re-adds devices across its own lifecycle, and the cleanup deleting the bus
+// underneath it made the next add fail with "bus not found".
+func (s *Server) scheduleEmptyBusCleanup(bus *virtualbus.VirtualBus, origin string) {
+	if bus.KeepWhenEmpty() {
+		return
+	}
+
+	busID := bus.BusID()
+	removeIfEmpty := func() {
 		if b := s.GetBus(busID); b != nil && len(b.Devices()) == 0 {
 			if err := s.RemoveBus(busID); err != nil {
 				s.logger.Error("timeout: failed to remove empty bus", "busID", busID, "error", err)
@@ -298,7 +293,24 @@ func (s *Server) RemoveDeviceByID(busID uint32, deviceID string) error {
 		}
 	}
 
-	return nil
+	emptyCtx := bus.GetBusEmptyContext()
+	if emptyCtx == nil {
+		s.logger.Debug("No bus empty context; Cleaning bus immediately")
+		removeIfEmpty()
+		return
+	}
+
+	go func() {
+		defer recoverAndLog(s.logger, "bus cleanup")
+		slog.Debug("Started bus cleanup goroutine (" + origin + ")")
+		select {
+		case <-emptyCtx.Done():
+			// Cancelled - a new device was added
+			return
+		case <-time.After(s.config.BusCleanupTimeout):
+			removeIfEmpty()
+		}
+	}()
 }
 
 // ListBuses returns a snapshot of active bus numbers.
@@ -1021,35 +1033,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		select {
 		case <-ctx.Done():
 			s.logger.Info("device removed, closing URB stream")
-			busID := owningBus.BusID()
-			if emptyCtx := owningBus.GetBusEmptyContext(); emptyCtx != nil {
-				go func() {
-					defer recoverAndLog(s.logger, "bus cleanup")
-					slog.Debug("Started bus cleanup goroutine (HandleUrbStream ctx.Done)")
-					select {
-					case <-emptyCtx.Done():
-						// Cancelled - a new device was added
-						return
-					case <-time.After(s.config.BusCleanupTimeout):
-						if b := s.GetBus(busID); b != nil && len(b.Devices()) == 0 {
-							if err := s.RemoveBus(busID); err != nil {
-								s.logger.Error("timeout: failed to remove empty bus", "busID", busID, "error", err)
-							} else {
-								s.logger.Info("timeout: removed empty bus", "busID", busID)
-							}
-						}
-					}
-				}()
-			} else {
-				s.logger.Debug("No bus empty context; Cleaning bus immediately")
-				if b := s.GetBus(busID); b != nil && len(b.Devices()) == 0 {
-					if err := s.RemoveBus(busID); err != nil {
-						s.logger.Error("timeout: failed to remove empty bus", "busID", busID, "error", err)
-					} else {
-						s.logger.Info("timeout: removed empty bus", "busID", busID)
-					}
-				}
-			}
+			s.scheduleEmptyBusCleanup(owningBus, "HandleUrbStream ctx.Done")
 			return nil
 		default:
 		}
