@@ -58,7 +58,37 @@ const (
 	serialBufSz = 16
 )
 
-// PLUGIN_HARDWARE structure from usbip-win2 0.9.8.0 and later.
+// PLUGIN_HARDWARE structure from usbip-win2 0.9.8.1, which inserted location_hash after port
+// (include/usbip/vhci.h, imported_device_location). Every field after port moved 4 bytes, so the
+// prefix trick attachIOCTL uses for older drivers cannot serve it: it is a separate layout, tried
+// first. Without it the IOCTL failed with every older size and each attach fell back to
+// usbip.exe, whose console window took the foreground and whose attach failed now and then
+// with "exit status 1" (Xbox Ally X and a desktop, 2026-09-28).
+type attachIOCTL981 struct {
+	Size         uint32
+	PortOutput   int32
+	LocationHash uint32
+	BusID        [32]byte
+	Service      [niMaxServ]byte
+	Host         [niMaxHost]byte
+	_            [3]byte
+	Serial       [serialBufSz]byte
+	WskEvents    bool
+	_            [3]byte
+}
+
+var (
+	_ [unsafe.Sizeof(attachIOCTL981{}) - 1124]struct{}
+	_ [1124 - unsafe.Sizeof(attachIOCTL981{})]struct{}
+	_ [unsafe.Offsetof(attachIOCTL981{}.BusID) - 12]struct{}
+	_ [12 - unsafe.Offsetof(attachIOCTL981{}.BusID)]struct{}
+	_ [unsafe.Offsetof(attachIOCTL981{}.Serial) - 1104]struct{}
+	_ [1104 - unsafe.Offsetof(attachIOCTL981{}.Serial)]struct{}
+	_ [unsafe.Offsetof(attachIOCTL981{}.WskEvents) - 1120]struct{}
+	_ [1120 - unsafe.Offsetof(attachIOCTL981{}.WskEvents)]struct{}
+)
+
+// PLUGIN_HARDWARE structure from usbip-win2 0.9.8.0 and earlier.
 //
 // In C++ it is `struct plugin_hardware : base, imported_device_location` plus trailing fields, so
 // the imported_device_location base is padded to 1096 bytes on its own before the serial starts.
@@ -168,6 +198,13 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 	copy(ioctlData.Service[:], service)
 	copy(ioctlData.Host[:], "localhost")
 
+	current := new(attachIOCTL981)
+	current.Size = uint32(unsafe.Sizeof(*current))
+	current.WskEvents = true
+	copy(current.BusID[:], busID)
+	copy(current.Service[:], service)
+	copy(current.Host[:], "localhost")
+
 	devicePathUTF16, err := windows.UTF16PtrFromString(devicePath)
 	if err != nil {
 		return 0, fmt.Errorf("open: failed to convert device path: %w", err)
@@ -196,11 +233,21 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 	// retrying is safe: it is a size negotiation, not a repeated attach attempt. Any other failure
 	// is a real one and stops here rather than being retried against a layout the driver has
 	// already shown it does not want.
-	var bytesReturned uint32
+	bytesReturned, err := pluginHardware(ctx, handle, unsafe.Pointer(current), current.Size, current)
+	switch {
+	case err == nil:
+		return attached(deviceExportMeta, current.PortOutput, bytesReturned, logger)
+	case errors.Is(err, ErrAttachUncertain):
+		return 0, err
+	case !isLayoutRejection(err):
+		return 0, fmt.Errorf("IOControl: DeviceIoControl failed (plugin_hardware size %d): %w", current.Size, err)
+	}
+
+	logger.Debug("Driver rejected the 0.9.8.1 plugin_hardware layout; trying older ones")
 	for index, size := range attachIOCTLSizes {
 		ioctlData.Size = size
 		ioctlData.PortOutput = 0
-		bytesReturned, err = pluginHardware(ctx, handle, ioctlData, size)
+		bytesReturned, err = pluginHardware(ctx, handle, unsafe.Pointer(ioctlData), size, ioctlData)
 		if err == nil {
 			break
 		}
@@ -215,20 +262,25 @@ func attachViaIOCTL(ctx context.Context, deviceExportMeta *usbip.ExportMeta, usb
 		logger.Debug("Driver rejected the plugin_hardware layout; trying an older one", "size", size)
 	}
 
-	logger.Debug("IOCTL completed", "bytesReturned", bytesReturned, "portOutput", ioctlData.PortOutput)
+	return attached(deviceExportMeta, ioctlData.PortOutput, bytesReturned, logger)
+}
 
-	if ioctlData.PortOutput <= 0 {
+// attached validates the port a successful plugin_hardware wrote back.
+func attached(deviceExportMeta *usbip.ExportMeta, port int32, bytesReturned uint32, logger *slog.Logger) (int, error) {
+	logger.Debug("IOCTL completed", "bytesReturned", bytesReturned, "portOutput", port)
+
+	if port <= 0 {
 		// The driver accepted the request, so the device may be plugged in without a port
 		// this side can detach by.
-		return 0, fmt.Errorf("%w: responseValidation: invalid USB port returned: %d", ErrAttachUncertain, ioctlData.PortOutput)
+		return 0, fmt.Errorf("%w: responseValidation: invalid USB port returned: %d", ErrAttachUncertain, port)
 	}
 
 	logger.Info("Successfully attached device via IOCTL",
 		"busID", deviceExportMeta.BusID,
 		"deviceID", deviceExportMeta.DevID,
-		"usbPort", ioctlData.PortOutput)
+		"usbPort", port)
 
-	return int(ioctlData.PortOutput), nil
+	return int(port), nil
 }
 
 // ioctlCancelGrace is how long a cancelled plugin_hardware request may take to
@@ -248,7 +300,10 @@ var (
 // has not completed after ioctlCancelGrace is abandoned. Any outcome after a
 // cancellation other than success is ErrAttachUncertain, because the driver may
 // have plugged the device in before it saw the cancellation.
-func pluginHardware(ctx context.Context, handle windows.Handle, data *attachIOCTL, size uint32) (uint32, error) {
+//
+// data points at the request buffer and owner is the Go object that holds it, kept reachable for as
+// long as an abandoned request may still write into it.
+func pluginHardware(ctx context.Context, handle windows.Handle, data unsafe.Pointer, size uint32, owner any) (uint32, error) {
 	event, err := windows.CreateEvent(nil, 1, 0, nil)
 	if err != nil {
 		return 0, fmt.Errorf("IOControl: CreateEvent failed: %w", err)
@@ -258,9 +313,9 @@ func pluginHardware(ctx context.Context, handle windows.Handle, data *attachIOCT
 	err = windows.DeviceIoControl(
 		handle,
 		ioctlPluginHardware,
-		(*byte)(unsafe.Pointer(data)),
+		(*byte)(data),
 		size,
-		(*byte)(unsafe.Pointer(data)),
+		(*byte)(data),
 		size,
 		&returned,
 		overlapped,
@@ -275,7 +330,7 @@ func pluginHardware(ctx context.Context, handle windows.Handle, data *attachIOCT
 		_ = windows.CancelIoEx(handle, overlapped)
 		if r, _ := windows.WaitForSingleObject(event, uint32(ioctlCancelGrace/time.Millisecond)); r != windows.WAIT_OBJECT_0 {
 			abandonedMu.Lock()
-			abandonedIOCTLs = append(abandonedIOCTLs, event, overlapped, data)
+			abandonedIOCTLs = append(abandonedIOCTLs, event, overlapped, owner)
 			abandonedMu.Unlock()
 			return 0, fmt.Errorf("%w: IOControl: plugin_hardware did not complete after cancellation: %v", ErrAttachUncertain, ctx.Err())
 		}
@@ -313,6 +368,7 @@ func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, u
 		"-b", fmt.Sprintf("%d-%d", deviceExportMeta.BusID, deviceExportMeta.DevID),
 		"-t",
 	)
+	hideConsole(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		logger.Error("Failed to attach device",
@@ -330,6 +386,13 @@ func attachViaCommand(ctx context.Context, deviceExportMeta *usbip.ExportMeta, u
 	return port, nil
 }
 
+// hideConsole keeps usbip.exe from opening a console window. From a GUI host each run opened one,
+// which took the foreground from the game or Steam and was seen as the running application.
+func hideConsole(cmd *exec.Cmd) {
+	const createNoWindow = 0x08000000
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+}
+
 func detachLocalhostClientImpl(ctx context.Context, port int, logger *slog.Logger) error {
 	if err := detachViaIOCTL(port, logger); err == nil {
 		return nil
@@ -337,7 +400,9 @@ func detachLocalhostClientImpl(ctx context.Context, port int, logger *slog.Logge
 		logger.Debug("Native IOCTL detach failed, trying usbip executable", "error", err)
 	}
 
-	output, err := exec.CommandContext(ctx, "usbip", "detach", "-p", strconv.Itoa(port)).CombinedOutput()
+	cmd := exec.CommandContext(ctx, "usbip", "detach", "-p", strconv.Itoa(port))
+	hideConsole(cmd)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		logger.Error("Failed to detach device", "error", err, "port", port, "output", string(output))
 		return err
