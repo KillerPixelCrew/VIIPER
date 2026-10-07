@@ -653,6 +653,12 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		return fmt.Errorf("no device context available from bus")
 	}
 
+	// A removed device ends the stream even while the reader is blocked on an idle connection.
+	stopUnblockRead := context.AfterFunc(ctx, func() {
+		_ = conn.SetReadDeadline(time.Now())
+	})
+	defer stopUnblockRead()
+
 	// Data-driven completion plumbing (ported from upstream 7e33d2d3):
 	// interrupt-IN URBs are completed asynchronously when the device has
 	// FRESH input (device HandleTransfer blocks on its input channel), so
@@ -971,6 +977,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 			var last []byte
 			haveLast := false
 			repeated := false
+		jobLoop:
 			for job := range jobs {
 				if !pace(job.ctx.Done()) {
 					takePending(job.seq)
@@ -1009,8 +1016,10 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 						}
 						continue
 					}
-					// Device answered "no data" without blocking.
-					break
+					// Device answered "no data" without blocking. Completing the URB empty would
+					// have the host resubmit at once and spin; it stays pending instead, like a
+					// NAKed endpoint, until an UNLINK or the stream teardown cancels it.
+					continue jobLoop
 				}
 
 				unlinked := !takePending(job.seq)
@@ -1040,6 +1049,9 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 
 		var hdr [urbHdrSize]byte
 		if err := usbip.ReadExactly(conn, hdr[:]); err != nil {
+			if ctx.Err() != nil {
+				continue
+			}
 			return fmt.Errorf("read URB header: %w", err)
 		}
 		cmd := binary.BigEndian.Uint32(hdr[urbHdrOffsetCommand : urbHdrOffsetCommand+4])
@@ -1137,6 +1149,7 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		actualLen := uint32(len(respData))
 		if dir == usbip.DirOut {
 			actualLen = uint32(len(outPayload))
+			respData = nil
 		}
 		if err := writeRet(seq, urbStatus, actualLen, respData, ep == 0); err != nil {
 			return err

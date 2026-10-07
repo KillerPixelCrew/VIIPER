@@ -35,8 +35,8 @@ upstream, it adds or changes (non-exhaustive):
   path for devices that implement `usb.InterruptInSource`, in place of upstream's
   per-URB completion goroutines.
 - Windows attach: a cancellable overlapped `plugin_hardware` IOCTL that
-  negotiates the usbip-win2 0.9.7.7, 0.9.7.8 and 0.9.8.0 layouts, and requests
-  the low-latency (WSK event) receive mode on 0.9.8.0.
+  negotiates the usbip-win2 0.9.7.7, 0.9.7.8, 0.9.8.0 and 0.9.8.1 layouts, and
+  requests the low-latency (WSK event) receive mode on 0.9.8.0 and later.
 - New device backends: `device/steamdeck` (the Steam Deck handheld controller),
   `device/steamcontroller` (the wired Steam Controller V1), `device/switchpro`,
   `device/xboxelite2`, and `device/xboxgip` with `cmd/gip_probe` (GIP protocol
