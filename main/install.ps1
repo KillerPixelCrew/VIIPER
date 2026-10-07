@@ -25,8 +25,8 @@ if ((Get-CimInstance Win32_ComputerSystem).SystemType -match "ARM") {
     $arch = "arm64"
 }
 
-$binaryName = "viiper-windows-$arch.exe"
-$downloadUrl = "https://github.com/$repo/releases/download/$version/$binaryName"
+$archiveName = "viiper-windows-$arch.zip"
+$downloadUrl = "https://github.com/$repo/releases/download/$version/$archiveName"
 
 Write-Host "Downloading from: $downloadUrl"
 $tempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemType Directory -Path $_ }
@@ -34,7 +34,7 @@ $tempDir = New-TemporaryFile | ForEach-Object { Remove-Item $_; New-Item -ItemTy
 try {
     function Get-ViiperVersion($path) {
         try {
-            $help = & $path --help -p 2>$null
+            $help = & $path --help -p
             $match = ($help | Select-String -Pattern "Version:\s*([^\s]+)" -AllMatches | Select-Object -First 1)
             if ($match) {
                 return $match.Matches[0].Groups[1].Value
@@ -52,8 +52,12 @@ try {
         catch { return $null }
     }
 
+    $tempArchive = Join-Path $tempDir "release.zip"
+    Invoke-WebRequest -Uri $downloadUrl -OutFile $tempArchive -ErrorAction Stop
+
+    Expand-Archive -LiteralPath $tempArchive -DestinationPath $tempDir -Force
+
     $tempViiper = Join-Path $tempDir "viiper.exe"
-    Invoke-WebRequest -Uri $downloadUrl -OutFile $tempViiper -ErrorAction Stop
 
     $newVersion = Get-ViiperVersion $tempViiper
     if (-not $newVersion) { $newVersion = "unknown" }
@@ -109,16 +113,16 @@ try {
     Write-Host ""
     Write-Host "Checking USBIP drivers..." -ForegroundColor Cyan
 
-    $usbipTargetVersion = [Version]"0.9.7.7"
+    $usbipTargetVersion = [Version]"0.9.8.1"
     $usbipInstalledVersion = $null
 
     $usbipEntry = Get-ItemProperty "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName -like 'USBip version*' } |
-        Select-Object -First 1
+    Where-Object { $_.DisplayName -like 'USBip version*' } |
+    Select-Object -First 1
     if (-not $usbipEntry) {
         $usbipEntry = Get-ItemProperty "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
-            Where-Object { $_.DisplayName -like 'USBip version*' } |
-            Select-Object -First 1
+        Where-Object { $_.DisplayName -like 'USBip version*' } |
+        Select-Object -First 1
     }
     if ($usbipEntry) {
         try { $usbipInstalledVersion = [Version]$usbipEntry.DisplayVersion } catch { }
@@ -150,7 +154,7 @@ try {
     if ($needsUsbipInstall) {
         Write-Host "This requires administrator privileges." -ForegroundColor Yellow
 
-        $usbipInstallerUrl = "https://github.com/vadimgrn/usbip-win2/releases/download/v.0.9.7.7/USBip-0.9.7.7-x64.exe"
+        $usbipInstallerUrl = "https://github.com/vadimgrn/usbip-win2/releases/download/v.0.9.8.1/USBip-0.9.8.1-x64.exe"
         $usbipInstaller = Join-Path $tempDir "USBip-setup.exe"
 
         try {
@@ -187,6 +191,9 @@ try {
     else {
         Write-Host "VIIPER server is now running and will start automatically on boot."
     }
+
+    taskkill.exe /IM "viiper.exe" /F > $null 2>&1
+    Start-Process -WindowStyle Hidden  "$installPath" -ArgumentList "server"
     
     if ($needsReboot) {
         Write-Host ""
