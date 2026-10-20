@@ -10,7 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
+
+	"github.com/Alia5/VIIPER/meta"
 
 	"fyne.io/systray"
 	"golang.org/x/sys/windows/registry"
@@ -24,17 +25,19 @@ const (
 	runValueKey = "VIIPER"
 )
 
-func Run(ctx context.Context, shutdown func()) {
+func Run(ctx context.Context, shutdown func(), update Update) {
 	go systray.Run(func() {
 		runtime.LockOSThread()
 
 		systray.SetIcon(trayIcon)
 		systray.SetTooltip("VIIPER")
 
-		version := readVersion()
-		infoStr := fmt.Sprintf("VIIPER - %s", version)
+		infoStr := fmt.Sprintf("VIIPER - %s", meta.Version)
 		versionItem := systray.AddMenuItem(infoStr, infoStr)
 		versionItem.Disable()
+
+		updateAvailableItem := systray.AddMenuItem("", "")
+		updateAvailableItem.Hide()
 
 		systray.AddSeparator()
 
@@ -49,6 +52,16 @@ func Run(ctx context.Context, shutdown func()) {
 				select {
 				case <-ctx.Done():
 					return
+				case availableVersion := <-update.AvailableVersion:
+					title := fmt.Sprintf("⬆️ Update available: %s", availableVersion)
+					updateAvailableItem.SetTitle(title)
+					updateAvailableItem.SetTooltip(title)
+					updateAvailableItem.Show()
+				case <-updateAvailableItem.ClickedCh:
+					select {
+					case update.ShowDialog <- struct{}{}:
+					default:
+					}
 				case <-autoStartItem.ClickedCh:
 					if toggleAutoStart() {
 						autoStartItem.Check()
@@ -64,16 +77,6 @@ func Run(ctx context.Context, shutdown func()) {
 		}()
 
 	}, func() {})
-}
-
-func readVersion() string {
-	if info, ok := debug.ReadBuildInfo(); ok {
-		v := info.Main.Version
-		if v != "" && v != "(devel)" {
-			return v
-		}
-	}
-	return "dev"
 }
 
 func autoStartEnabled() bool {

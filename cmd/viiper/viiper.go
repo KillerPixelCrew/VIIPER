@@ -2,17 +2,21 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/Alia5/VIIPER/internal/config"
 	"github.com/Alia5/VIIPER/internal/configpaths"
+	"github.com/Alia5/VIIPER/internal/install"
 	"github.com/Alia5/VIIPER/internal/log"
-	"github.com/Alia5/VIIPER/internal/updater"
+	"github.com/Alia5/VIIPER/internal/tray"
+	"github.com/Alia5/VIIPER/meta"
 
 	_ "github.com/Alia5/VIIPER/internal/registry" // Register all device handlers
 
@@ -31,7 +35,7 @@ func main() {
 	var cli config.CLI
 	ctx := kong.Parse(&cli,
 		kong.Name("VIIPER"),
-		kong.Description(Description()),
+		kong.Description(meta.Description()),
 		kong.UsageOnError(),
 		kong.Help(helpWithASCIIArt),
 		// Load configuration from JSON/YAML/TOML in priority order; flags/env override config values.
@@ -55,18 +59,66 @@ func main() {
 
 	ctx.Bind(logger)
 	ctx.BindTo(rawLogger, (*log.RawLogger)(nil))
+	exe, err := os.Executable()
+	ctx.FatalIfErrorf(err)
+	configDir, err := configpaths.DefaultConfigDir()
+	if err != nil {
+		logger.Warn("no config dir, skipped update versions are not remembered", "error", err)
+	}
+	target := install.Target{
+		Source:    exe,
+		Version:   meta.Version,
+		API:       install.GitHubAPI,
+		Assets:    install.GitHubAssets,
+		TempDir:   os.TempDir(),
+		ConfigDir: configDir,
+		Launch:    (*exec.Cmd).Start,
+	}
+	ctx.Bind(target)
+
+	update := tray.Update{
+		AvailableVersion: make(chan string, 1),
+		ShowDialog:       make(chan struct{}, 1),
+	}
+	ctx.Bind(update)
 
 	if cli.UpdateNotify != config.UpdateNotifyNone {
 		go func() {
-			time.Sleep(10 * time.Second)
-			updater.CheckUpdate(Version, cli.UpdateNotify)
-			for range time.NewTicker(1 * time.Hour).C {
-				updater.CheckUpdate(Version, cli.UpdateNotify)
+			nextCheck := time.After(10 * time.Second)
+			for {
+				select {
+				case <-nextCheck:
+				case <-update.ShowDialog:
+					install.ForgetUpdateChoice(&target)
+				}
+				availableVersion, err := install.CheckUpdate(
+					&target,
+					cli.UpdateNotify == config.UpdateNotifyPrerelease,
+					install.ShowUpdateMessage,
+				)
+				if err != nil {
+					logger.Error("update check failed", "error", err)
+				}
+				if availableVersion != "" {
+					select {
+					case update.AvailableVersion <- availableVersion:
+					default:
+					}
+				}
+				nextCheck = time.After(1 * time.Hour)
 			}
 		}()
 	}
 
 	err = ctx.Run()
+	switch {
+	case errors.Is(err, install.ErrRebootRequired):
+		logger.Info(err.Error())
+		ctx.Exit(install.ExitRebootRequired)
+	case errors.Is(err, install.ErrCanceled):
+		logger.Info(err.Error())
+		ctx.Exit(install.ExitCanceled)
+	}
 	ctx.FatalIfErrorf(err)
 }
 
@@ -120,9 +172,9 @@ func helpWithASCIIArt(options kong.HelpOptions, ctx *kong.Context) error {
 
 	helpText := captureHelpOutput(options, ctx)
 
-	art := asciiBrailleColoredSmall
+	art := meta.ASCIIBrailleColoredSmall
 	if helpStyle == "big" {
-		art = asciiBrailleColoredBig
+		art = meta.ASCIIBrailleColoredBig
 	}
 
 	output := mergeArtWithHelp(normalizeLineEndings(art), normalizeLineEndings(helpText))
