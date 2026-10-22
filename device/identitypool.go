@@ -21,9 +21,8 @@ func NewIdentityPool() *IdentityPool {
 }
 
 // Reserve claims id, or a variant of it when id is already taken. A variant
-// replaces the last two characters with a hex counter (01 to 0F); an id shorter
-// than two characters gets the counter appended instead. When every variant is
-// taken, id itself is returned and reserved again, as before this pool existed.
+// replaces the last two characters with a hex counter (at least two digits); an
+// id shorter than two characters gets the counter appended instead.
 func (p *IdentityPool) Reserve(id string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -33,7 +32,7 @@ func (p *IdentityPool) Reserve(id string) string {
 		if len(id) >= 2 {
 			prefix = id[:len(id)-2]
 		}
-		for i := 1; i < 16; i++ {
+		for i := 1; ; i++ {
 			candidate := fmt.Sprintf("%s%02X", prefix, i)
 			if _, exists := p.inUse[candidate]; !exists {
 				id = candidate

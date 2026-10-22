@@ -25,6 +25,7 @@ const (
 )
 
 type SteamDeck struct {
+	device.Releaser
 	gate *device.InputGate
 	// inputState is stored by value so an update does not allocate; readers copy it under
 	// stateMu.
@@ -41,6 +42,10 @@ type SteamDeck struct {
 	controller          controllerState
 	lastFeatureResponse []byte
 }
+
+// Keep the legacy identity for the first controller, and reuse it after removal.
+// Additional live controllers must not share Steam's per-controller settings.
+var serials = device.NewIdentityPool()
 
 type controllerState struct {
 	mode         byte
@@ -133,6 +138,11 @@ func New(o *device.CreateOptions) (*SteamDeck, error) {
 			d.descriptor.Device.IDProduct = *o.IDProduct
 		}
 	}
+	serial := serials.Reserve(d.controller.unitSerial)
+	d.controller.boardSerial = serial
+	d.controller.unitSerial = serial
+	d.descriptor.Strings[d.descriptor.Device.ISerialNumber] = serial
+	d.OnRelease(func() { serials.Release(serial) })
 	return d, nil
 }
 
@@ -604,7 +614,7 @@ var defaultDescriptor = usb.Descriptor{
 		BcdDevice:          0x0100,
 		IManufacturer:      0x01,
 		IProduct:           0x02,
-		ISerialNumber:      0x03,
+		ISerialNumber:      0x06,
 		BNumConfigurations: 0x01,
 		Speed:              2,
 	},
@@ -665,7 +675,8 @@ var defaultDescriptor = usb.Descriptor{
 				BEndpointAddress: 0x80 | controllerEndpointNumber,
 				BMAttributes:     0x03,
 				WMaxPacketSize:   0x0040,
-				BInterval:        0x06,
+				// SDL advances Deck sensor time by exactly 4 ms per report.
+				BInterval: 0x04,
 			}},
 		},
 	},

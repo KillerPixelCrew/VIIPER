@@ -22,8 +22,40 @@ func newDeckClock(t *testing.T) *deckClock {
 		t.Fatal(err)
 	}
 	c := &deckClock{d: d, now: time.Unix(1_000_000, 0), buf: make([]byte, InputReportLen)}
+	t.Cleanup(d.ReleaseResources)
 	d.now = func() time.Time { return c.now }
 	return c
+}
+
+// Decode and integrate like stock SDL: every Deck report adds exactly 4 ms of
+// sensor time, independent of how often the client submits a sample.
+func TestSdlRotationMatchesWallClockAtDifferentSubmitRates(t *testing.T) {
+	for _, sampleMs := range []int{1, 4, 8} {
+		t.Run(time.Duration(sampleMs*int(time.Millisecond)).String(), func(t *testing.T) {
+			c := newDeckClock(t)
+			var expectedCountsMs, reportedCountsMs float64
+			var rate int16
+			for ms := 0; ms <= 4000; ms++ {
+				if ms > 0 {
+					expectedCountsMs += float64(rate)
+				}
+				if ms%sampleMs == 0 {
+					rate = int16(10000 + (ms/sampleMs)%23*100)
+					c.sample(float64(ms), rate, 0, 0)
+				}
+				if ms%4 == 0 {
+					pitch, _, _ := c.report(float64(ms))
+					if ms > 0 {
+						reportedCountsMs += float64(pitch) * 4
+					}
+				}
+			}
+			const degreesPerCountMs = 2000.0 / 32768.0 / 1000.0
+			if diff := math.Abs(reportedCountsMs-expectedCountsMs) * degreesPerCountMs; diff > 0.13 {
+				t.Fatalf("SDL rotation differs from wall-clock rotation by %g degrees", diff)
+			}
+		})
+	}
 }
 
 func (c *deckClock) sample(atMs float64, pitch, yaw, roll int16) {

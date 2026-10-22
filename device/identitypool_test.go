@@ -33,7 +33,7 @@ func TestIdentityPoolAcceptsShortDuplicates(t *testing.T) {
 
 func TestIdentityPoolIsSafeForConcurrentUse(t *testing.T) {
 	p := NewIdentityPool()
-	const workers = 15
+	const workers = 64
 	got := make(chan string, workers)
 	var wg sync.WaitGroup
 	for range workers {

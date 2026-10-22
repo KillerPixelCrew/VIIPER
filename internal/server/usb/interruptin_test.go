@@ -23,8 +23,8 @@ import (
 const (
 	deckControllerEndpoint = 3
 	deckKeyboardEndpoint   = 1
-	// The Steam Deck's endpoints declare a 6 ms bInterval.
-	deckInterval = 6 * time.Millisecond
+	// SDL assigns exactly 4 ms of sensor time to every Deck report.
+	deckInterval = 4 * time.Millisecond
 )
 
 type deckStream struct {
@@ -100,7 +100,7 @@ func (s *deckStream) submitIn(ep uint32) uint32 {
 	cmd := usbip.CmdSubmit{
 		Basic:             usbip.HeaderBasic{Command: usbip.CmdSubmitCode, Seqnum: seq, Dir: usbip.DirIn, Ep: ep},
 		TransferBufferLen: 64,
-		Interval:          6,
+		Interval:          uint32(deckInterval / time.Millisecond),
 	}
 	if err := cmd.Write(s.conn); err != nil {
 		s.t.Fatal(err)
