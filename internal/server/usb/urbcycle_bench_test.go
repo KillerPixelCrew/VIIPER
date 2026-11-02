@@ -43,7 +43,8 @@ import (
 // Knobs, all environment variables: VIIPER_URB_BENCH_SECONDS (measured window, default 5),
 // VIIPER_URB_BENCH_INPUT_HZ (input updates per second, default 0 for an untouched pad),
 // VIIPER_URB_BENCH_GOMAXPROCS (default: what libviiper picks), VIIPER_IDLE_MODE (auto, nak or
-// keepalive), VIIPER_IDLE_KEEPALIVE_INTERVAL (how often an idle endpoint repeats its last report)
+// keepalive), VIIPER_IDLE_KEEPALIVE_INTERVAL (how often an idle endpoint repeats its last report),
+// VIIPER_REST_KEEPALIVE_INTERVAL (how often a report at rest repeats; default 0)
 // and VIIPER_URB_BENCH_PROFILE (write a pprof CPU profile of the measured window).
 //
 // Read Mcycles/s and ctxsw/s to compare configurations: the per-completion figures divide by a
@@ -79,6 +80,15 @@ func TestURBCycleCost(t *testing.T) {
 		idleKeepalive = d
 	}
 
+	var restKeepalive time.Duration
+	if v := os.Getenv("VIIPER_REST_KEEPALIVE_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		restKeepalive = d
+	}
+
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	server := usbsrv.New(usbsrv.ServerConfig{
 		Addr:                     "127.0.0.1:0",
@@ -87,6 +97,7 @@ func TestURBCycleCost(t *testing.T) {
 		HardwarePacedCompletions: true,
 		IdleMode:                 idleMode,
 		IdleKeepaliveInterval:    idleKeepalive,
+		RestKeepaliveInterval:    restKeepalive,
 	}, logger, nil)
 	go func() { _ = server.ListenAndServe() }()
 	<-server.Ready()
@@ -196,8 +207,8 @@ func TestURBCycleCost(t *testing.T) {
 	cpu := after.cpu - before.cpu
 	kernel := after.kernel - before.kernel
 	result := fmt.Sprintf(
-		"RESULT input=%dHz gomaxprocs=%d idle=%s/%s completions/s=%.1f Mcycles/s=%.1f kcycles/completion=%.0f cpu%%=%.2f kernel_share=%.2f ctxsw/s=%.0f ctxsw/completion=%.2f mallocs/completion=%.1f bytes/completion=%.0f gc/min=%.1f",
-		inputHz, runtime.GOMAXPROCS(0), idleMode, idleKeepalive,
+		"RESULT input=%dHz gomaxprocs=%d idle=%s/%s rest=%s completions/s=%.1f Mcycles/s=%.1f kcycles/completion=%.0f cpu%%=%.2f kernel_share=%.2f ctxsw/s=%.0f ctxsw/completion=%.2f mallocs/completion=%.1f bytes/completion=%.0f gc/min=%.1f",
+		inputHz, runtime.GOMAXPROCS(0), idleMode, idleKeepalive, restKeepalive,
 		perSecond,
 		float64(cycles)/1e6/float64(seconds),
 		float64(cycles)/1e3/measured,

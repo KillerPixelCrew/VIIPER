@@ -778,6 +778,13 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 		if idleInterval < interval {
 			idleInterval = interval
 		}
+		// How long an endpoint whose device declares its state at rest waits before repeating it.
+		// Only a report that nothing consumes is slowed this way; see usb.InterruptInRest.
+		restInterval := s.config.RestKeepaliveInterval
+		rest, _ := dev.(usb.InterruptInRest)
+		if rest == nil || nakIdle || interval <= 0 || restInterval <= idleInterval {
+			restInterval = 0
+		}
 
 		// Hardware pacing: completions are held to the endpoint's poll cadence (anchored,
 		// drift-free). The input gate coalesces updates that land between polls, latest state
@@ -872,6 +879,8 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 				// had seen, which is what puts the endpoint on the idle interval.
 				repeated := false
 				completed := false
+				// lastSent is when the previous report went out; the rest interval counts from it.
+				var lastSent time.Time
 				poll := time.NewTimer(time.Hour)
 				if !poll.Stop() {
 					<-poll.C
@@ -884,10 +893,15 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 						// queued behind it, and in NAK-idle mode that wait has no deadline.
 						continue
 					}
-					if !pace(streamDone) {
+					polling := !nakIdle && interval > 0
+					// A report at rest that the host already has waits out the rest interval,
+					// counted from the previous report. That one wait replaces pace's: the rest
+					// interval is longer than the bInterval, and two sleeps per report would
+					// cost nearly as much as the reports the rest interval saves.
+					resting := polling && repeated && restInterval > 0 && rest.AtRest(ep)
+					if !resting && !pace(streamDone) {
 						return
 					}
-					polling := !nakIdle && interval > 0
 
 					// How long this URB may wait for fresh input before the report goes out with
 					// the state on hand.
@@ -915,6 +929,9 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 						case repeated && idleInterval > interval:
 							wait = idleInterval - interval
 						}
+					}
+					if resting {
+						wait = max(time.Until(lastSent.Add(restInterval)), 0)
 					}
 					fresh, send := false, false
 					if polling && wait == 0 {
@@ -966,6 +983,13 @@ func (s *Server) handleUrbStream(conn net.Conn, dev usb.Device) error {
 					repeated = completed && !fresh
 					completed = true
 					complete(frame, job.seq, n)
+					lastSent = time.Now()
+					if resting && hwPaced {
+						// Restart the grid from this report, so the next one waits a full
+						// bInterval instead of going out at once for a grid point the rest wait
+						// has already passed.
+						nextDue = lastSent.Add(interval)
+					}
 				}
 			}()
 			return endpoint

@@ -40,4 +40,14 @@ type ServerConfig struct {
 	// ROG Ally (2026-09-26). Opt in to a slower repeat only for a device whose consumer has been
 	// checked with it.
 	IdleKeepaliveInterval time.Duration `help:"How often an unchanged interrupt-IN report is repeated once an endpoint is idle" default:"0" env:"VIIPER_IDLE_KEEPALIVE_INTERVAL"`
+	// RestKeepaliveInterval paces the repeat of an unchanged report that its device declares at
+	// rest (usb.InterruptInRest): nothing pressed, touched or moving. It is the safe form of
+	// IdleKeepaliveInterval, because a moving gyro or a held stick never counts as at rest, so
+	// no consumer that integrates per report loses anything. The endpoint returns to its
+	// bInterval with the first fresh input. 0, or a value at or below the effective idle
+	// interval, disables it.
+	//
+	// Keep it below 16 ms for the Steam Deck: SDL's HIDAPI Deck driver reads one report with a
+	// 16 ms timeout when it opens the device and ignores the device if none arrives.
+	RestKeepaliveInterval time.Duration `help:"How often an unchanged interrupt-IN report at rest is repeated; 0 to disable" default:"0" env:"VIIPER_REST_KEEPALIVE_INTERVAL"`
 }

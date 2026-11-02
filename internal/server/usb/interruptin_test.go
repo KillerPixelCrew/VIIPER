@@ -37,6 +37,11 @@ type deckStream struct {
 // newDeckStream starts a server with one Steam Deck on it and imports the device, leaving a
 // connection the test can submit URBs on.
 func newDeckStream(t *testing.T, idleKeepalive time.Duration) *deckStream {
+	return newRestingDeckStream(t, idleKeepalive, 0)
+}
+
+// newRestingDeckStream is newDeckStream with a rest interval for reports the Deck declares at rest.
+func newRestingDeckStream(t *testing.T, idleKeepalive, restKeepalive time.Duration) *deckStream {
 	t.Helper()
 	server := usbsrv.New(usbsrv.ServerConfig{
 		Addr:                     "127.0.0.1:0",
@@ -45,6 +50,7 @@ func newDeckStream(t *testing.T, idleKeepalive time.Duration) *deckStream {
 		HardwarePacedCompletions: true,
 		IdleMode:                 "auto",
 		IdleKeepaliveInterval:    idleKeepalive,
+		RestKeepaliveInterval:    restKeepalive,
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	go func() { _ = server.ListenAndServe() }()
 	<-server.Ready()
@@ -323,5 +329,96 @@ func TestCompletionsStayOnTheEndpointGrid(t *testing.T) {
 			}
 		}
 		last, lastPacket = now, packet
+	}
+}
+
+// gaps completes count URBs back to back on the controller endpoint and returns the time
+// between consecutive reports.
+func (s *deckStream) gaps(count int) []time.Duration {
+	s.t.Helper()
+	var out []time.Duration
+	var last time.Time
+	for i := range count {
+		s.submitIn(deckControllerEndpoint)
+		if _, ok := s.read(2 * time.Second); !ok {
+			s.t.Fatalf("URB %d did not complete", i)
+		}
+		now := time.Now()
+		if i > 0 {
+			out = append(out, now.Sub(last))
+		}
+		last = now
+	}
+	return out
+}
+
+func meanGap(gaps []time.Duration) time.Duration {
+	var sum time.Duration
+	for _, gap := range gaps {
+		sum += gap
+	}
+	return sum / time.Duration(len(gaps))
+}
+
+const deckRest = 10 * time.Millisecond
+
+// An untouched Deck repeats its resting report at the rest interval, and never so slowly that
+// SDL, which waits 16 ms for a report when it opens the device, misses one.
+func TestARestingDeckRepeatsAtTheRestInterval(t *testing.T) {
+	stream := newRestingDeckStream(t, 0, deckRest)
+	gaps := stream.gaps(40)[2:]
+	if mean := meanGap(gaps); mean < deckRest*8/10 || mean > deckRest*13/10 {
+		t.Fatalf("resting reports arrive every %v on average, want about %v", mean, deckRest)
+	}
+	for i, gap := range gaps {
+		if gap >= 16*time.Millisecond {
+			t.Fatalf("resting report %d arrived %v after the previous one", i, gap)
+		}
+	}
+}
+
+// A state that Steam acts on per report keeps the endpoint at its bInterval even while it does
+// not change: a held stick, a pressed button and a gyro rate.
+func TestAHeldStateIsNotAtRest(t *testing.T) {
+	cases := map[string]steamdeck.InputState{
+		"stick":  {LStickX: 12000},
+		"button": {A: true},
+		"gyro":   {Yaw: 300},
+	}
+	for name, state := range cases {
+		t.Run(name, func(t *testing.T) {
+			stream := newRestingDeckStream(t, 0, deckRest)
+			stream.deck.UpdateInputState(&state)
+			if mean := meanGap(stream.gaps(40)[2:]); mean > deckInterval*3/2 {
+				t.Fatalf("a held %s repeats every %v, want the %v bInterval", name, mean, deckInterval)
+			}
+		})
+	}
+}
+
+// Fresh input ends the rest wait at once, and the report after it keeps to the bInterval
+// instead of following straight on to catch up with the grid.
+func TestFreshInputEndsTheRestWait(t *testing.T) {
+	stream := newRestingDeckStream(t, 0, 200*time.Millisecond)
+	stream.gaps(3)
+	stream.submitIn(deckControllerEndpoint)
+	time.Sleep(20 * time.Millisecond)
+
+	state := steamdeck.InputState{LStickX: 12000}
+	start := time.Now()
+	stream.deck.UpdateInputState(&state)
+	if _, ok := stream.read(2 * time.Second); !ok {
+		t.Fatal("fresh input did not complete the resting URB")
+	}
+	woke := time.Now()
+	if elapsed := woke.Sub(start); elapsed > 5*deckInterval {
+		t.Fatalf("fresh input took %v to leave the rest wait", elapsed)
+	}
+	stream.submitIn(deckControllerEndpoint)
+	if _, ok := stream.read(2 * time.Second); !ok {
+		t.Fatal("the report after fresh input never arrived")
+	}
+	if gap := time.Since(woke); gap < deckInterval/2 {
+		t.Fatalf("the report after fresh input followed %v later, off the bInterval grid", gap)
 	}
 }

@@ -360,6 +360,29 @@ func idleKeepaliveIntervalFromEnv() time.Duration {
 	return d
 }
 
+// defaultRestKeepaliveInterval is how often an endpoint repeats a report its device declares at
+// rest: nothing pressed, touched or moving (usb.InterruptInRest). An untouched Deck otherwise
+// costs 250 loopback completions a second carrying bytes the host already has, and that is most
+// of libviiper's idle CPU. Unlike the idle interval this cannot drop motion, because a moving
+// gyro or a held stick is never at rest. 10 ms stays inside the 16 ms in which SDL's Deck
+// driver expects a report when it opens the device.
+//
+// VIIPER_REST_KEEPALIVE_INTERVAL takes a Go duration; 0 restores a repeat every bInterval.
+const defaultRestKeepaliveInterval = 10 * time.Millisecond
+
+func restKeepaliveIntervalFromEnv() time.Duration {
+	v := os.Getenv("VIIPER_REST_KEEPALIVE_INTERVAL")
+	if v == "" {
+		return defaultRestKeepaliveInterval
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		slog.Warn("ignoring VIIPER_REST_KEEPALIVE_INTERVAL", "value", v, "error", err)
+		return defaultRestKeepaliveInterval
+	}
+	return d
+}
+
 //export viiper_init
 func viiper_init(listenAddr *C.char) (rc C.int) {
 	defer recoverExport(&rc)
@@ -413,6 +436,7 @@ func viiper_init(listenAddr *C.char) (rc C.int) {
 		HardwarePacedCompletions: os.Getenv("VIIPER_HW_PACED") != "0",
 		IdleMode:                 idleModeFromEnv(),
 		IdleKeepaliveInterval:    idleKeepaliveIntervalFromEnv(),
+		RestKeepaliveInterval:    restKeepaliveIntervalFromEnv(),
 	}
 
 	server = usbsrv.New(cfg, logger, nil)

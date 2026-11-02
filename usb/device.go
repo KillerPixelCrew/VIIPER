@@ -37,6 +37,19 @@ type InterruptInSource interface {
 	WriteInputReport(ep uint32, buf []byte) (int, bool)
 }
 
+// InterruptInRest is an optional interface for an InterruptInSource whose consumers ignore how
+// often a resting report is repeated. AtRest reports whether the endpoint's current state is
+// one such report: nothing pressed, touched or moving, so the host acts on none of its repeats.
+// While a report that is at rest repeats unchanged, the server may send it at its rest interval
+// instead of every bInterval; fresh input still completes the next URB at once.
+//
+// A state is at rest only when dropping repeats of it changes nothing a consumer computes. A
+// rotating gyro, a held stick or a touched trackpad is not at rest even while its encoded value
+// stays constant, because a consumer that integrates per report would lose motion.
+type InterruptInRest interface {
+	AtRest(ep uint32) bool
+}
+
 // ControlDevice is an optional interface for devices that need to handle
 // control transfers on endpoint 0 (EP0).
 //

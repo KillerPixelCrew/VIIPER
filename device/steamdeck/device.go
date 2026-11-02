@@ -209,6 +209,44 @@ func (d *SteamDeck) WriteInputReport(ep uint32, buf []byte) (int, bool) {
 	return InputReportLen, true
 }
 
+// restStickRadius is how far from centre a stick or trigger may rest and still count as at rest,
+// in report counts (1/16 of full scale). A real stick seldom rests at exactly zero, and Steam's
+// stick and trigger deadzones are wider than this, so nothing below it reaches any binding.
+const restStickRadius = 2048
+
+// AtRest reports whether the controller endpoint's current report is one Steam and SDL act on
+// no differently when it repeats less often: no button, touch or force, sticks and triggers
+// within restStickRadius, and no gyro rate. Steam integrates the gyro per report and a held
+// stick is applied per report, so either keeps the endpoint at its bInterval however long its
+// value stays the same. The accelerometer only reports gravity while the gyro reads zero.
+func (d *SteamDeck) AtRest(ep uint32) bool {
+	if ep != controllerEndpointNumber {
+		return false
+	}
+	d.stateMu.Lock()
+	defer d.stateMu.Unlock()
+	if d.gyro.rate != [3]float64{} || d.gyro.angle != [3]float64{} {
+		return false
+	}
+	s := d.inputState
+	pressed := s.A || s.X || s.B || s.Y || s.L1 || s.R1 || s.L2Digital || s.R2Digital ||
+		s.L5 || s.Menu || s.Steam || s.Options || s.DPadDown || s.DPadLeft || s.DPadRight ||
+		s.DPadUp || s.L3 || s.RPadTouch || s.LPadTouch || s.RPadPress || s.LPadPress || s.R5 ||
+		s.R3 || s.RStickTouch || s.LStickTouch || s.R4 || s.L4 || s.QuickAccess
+	if pressed || s.Pitch != 0 || s.Yaw != 0 || s.Roll != 0 {
+		return false
+	}
+	if s.LPadForce != 0 || s.RPadForce != 0 || s.LStickForce != 0 || s.RStickForce != 0 {
+		return false
+	}
+	return nearCentre(s.LStickX) && nearCentre(s.LStickY) && nearCentre(s.RStickX) &&
+		nearCentre(s.RStickY) && s.LTrigger <= restStickRadius && s.RTrigger <= restStickRadius
+}
+
+func nearCentre(v int16) bool {
+	return v >= -restStickRadius && v <= restStickRadius
+}
+
 func (d *SteamDeck) HandleTransfer(ctx context.Context, ep uint32, dir uint32, out []byte) []byte {
 	if dir == usbip.DirIn {
 		switch ep {
